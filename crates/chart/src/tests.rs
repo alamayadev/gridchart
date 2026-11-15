@@ -2402,18 +2402,40 @@ fn every_marker_shape_has_a_distinct_hull_and_the_same_ring() {
 }
 
 #[test]
-fn legend_swatches_follow_the_marker_shape_without_a_ring() {
-    use crate::render::shape::{MarkerGeometry, MarkerShape, geometry};
+fn legend_swatches_follow_the_series_marker_hull() {
+    use crate::render::shape::{MarkerGeometry, marker_shape, geometry};
     let mut c = chart(ChartKind::LineMarkers);
     c.legend = LegendPos::Bottom;
     let prims = render(&c, &sample(ChartKind::LineMarkers), 640.0, 400.0, &ApproxMeasure);
-    let swatches: Vec<&Prim> = prims.iter().filter(|p| matches!(p, Prim::Circle { stroke: None, .. })).collect();
-    assert!(!swatches.is_empty(), "a line legend draws a marker swatch");
-    for p in swatches {
-        if let Prim::Circle { cx, cy, r, .. } = p {
-            match geometry(MarkerShape::Circle, *cx, *cy, *r) {
-                MarkerGeometry::Circle { r: want } => assert_eq!(*r, want),
-                MarkerGeometry::Polygon(_) => panic!("a circle swatch stays a circle"),
+    let swatches: Vec<&Prim> = prims
+        .iter()
+        .filter(|p| matches!(p, Prim::Circle { stroke: None, .. } | Prim::Polygon { stroke: None, .. }))
+        .collect();
+    assert_eq!(swatches.len(), 3, "one swatch per legend entry");
+    for (i, p) in swatches.iter().enumerate() {
+        let (cx, cy, r) = match p {
+            Prim::Circle { cx, cy, r, .. } => (*cx, *cy, *r),
+            Prim::Polygon { pts, .. } => {
+                let cx = pts.iter().map(|q| q[0]).fold(f32::MIN, f32::max) / 2.0
+                    + pts.iter().map(|q| q[0]).fold(f32::MAX, f32::min) / 2.0;
+                let cy = pts.iter().map(|q| q[1]).fold(f32::MIN, f32::max) / 2.0
+                    + pts.iter().map(|q| q[1]).fold(f32::MAX, f32::min) / 2.0;
+                let r = pts.iter().map(|q| ((q[0] - cx).powi(2) + (q[1] - cy).powi(2)).sqrt()).fold(0.0f32, f32::max);
+                (cx, cy, r)
+            }
+            _ => continue,
+        };
+        match geometry(marker_shape(i), cx, cy, r) {
+            MarkerGeometry::Circle { .. } => {
+                assert!(matches!(p, Prim::Circle { .. }), "entry {i} should be the series hull circle");
+            }
+            MarkerGeometry::Polygon(want) => {
+                let got = match p {
+                    Prim::Polygon { pts, .. } => pts.clone(),
+                    _ => vec![],
+                };
+                assert_eq!(got.len(), 4, "entries 1 and 2 are four-point hulls");
+                assert_eq!(got, want, "entry {i} is its series' own hull");
             }
         }
     }

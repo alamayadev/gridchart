@@ -1,5 +1,5 @@
 use super::frame::Bx;
-use super::shape::{self, MarkerGeometry, MarkerShape};
+use super::shape::{self, MarkerGeometry, MarkerShape, marker_shape};
 use super::trend::supports_trendline;
 use super::{
     Chart, ChartData, ChartKind, Ctx, DOWN, HAlign, LABEL_SIZE, MAX_CATS, MAX_SERIES, MAX_TRENDLINES, Prim, Rgba, SeriesData, UP, VAlign, auto_name,
@@ -94,23 +94,23 @@ pub(super) fn swatch_w(sw: Swatch, s: f32) -> f32 {
     if sw == Swatch::Box { s } else { s * 2.0 }
 }
 
-/// A legend marker: the series hull, no ring (the white separator belongs to plot markers).
-fn draw_marker(ctx: &mut Ctx, cx: f32, cy: f32, r: f32, color: Rgba) {
-    match shape::geometry(MarkerShape::Circle, cx, cy, r) {
+/// A legend marker: the series hull, no ring (the card ring belongs to plot markers).
+fn draw_marker(ctx: &mut Ctx, cx: f32, cy: f32, r: f32, color: Rgba, shape: MarkerShape) {
+    match shape::geometry(shape, cx, cy, r) {
         MarkerGeometry::Circle { r } => ctx.out.push(Prim::Circle { cx, cy, r, fill: Some(color), stroke: None }),
         MarkerGeometry::Polygon(pts) => ctx.out.push(Prim::Polygon { pts, fill: Some(super::Fill::solid(color)), stroke: None }),
     }
 }
 
-pub(super) fn draw_swatch(ctx: &mut Ctx, sw: Swatch, x: f32, yc: f32, s: f32, color: Rgba) {
+pub(super) fn draw_swatch(ctx: &mut Ctx, sw: Swatch, x: f32, yc: f32, s: f32, color: Rgba, index: usize) {
     match sw {
         Swatch::Box => ctx.rect(x, yc - s / 2.0, s, s, color, None),
         Swatch::Line => ctx.hline(x, x + 2.0 * s, yc, color, 2.0),
         Swatch::LineMarker => {
             ctx.hline(x, x + 2.0 * s, yc, color, 2.0);
-            draw_marker(ctx, x + s, yc, s * 0.35, color);
+            draw_marker(ctx, x + s, yc, s * 0.35, color, marker_shape(index));
         }
-        Swatch::Marker => draw_marker(ctx, x + s, yc, s * 0.4, color),
+        Swatch::Marker => draw_marker(ctx, x + s, yc, s * 0.4, color, marker_shape(index)),
     }
 }
 
@@ -150,7 +150,7 @@ pub(super) fn draw_legend(ctx: &mut Ctx, entries: &[(String, Rgba, Swatch)], pos
                 let yc = y0 + ri as f32 * row_h + row_h / 2.0;
                 for &(i, iw) in row {
                     if let Some(e) = entries.get(i) {
-                        draw_swatch(ctx, e.2, x, yc, s, e.1);
+                        draw_swatch(ctx, e.2, x, yc, s, e.1, i);
                         let sx = swatch_w(e.2, s) + gap;
                         let t = ctx.fit(&e.0, size, (iw - sx).max(0.0) + 0.5);
                         ctx.text(x + sx, yc, &t, size, ctx.style.text, (HAlign::Left, VAlign::Middle));
@@ -179,7 +179,7 @@ pub(super) fn draw_legend(ctx: &mut Ctx, entries: &[(String, Rgba, Swatch)], pos
             let x0 = if pos == LegendPos::Right { area.right() - colw } else { area.x };
             for (i, e) in entries.iter().take(n).enumerate() {
                 let yc = y0 + i as f32 * row_h + row_h / 2.0;
-                draw_swatch(ctx, e.2, x0, yc, s, e.1);
+                draw_swatch(ctx, e.2, x0, yc, s, e.1, i);
                 let sx = swatch_w(e.2, s) + gap;
                 let t = ctx.fit(&e.0, size, (colw - sx).max(0.0) + 0.5);
                 ctx.text(x0 + sx, yc, &t, size, ctx.style.text, (HAlign::Left, VAlign::Middle));
