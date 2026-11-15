@@ -1958,3 +1958,174 @@ fn precision_is_exact_at_the_endpoints_and_midpoint_rounds_deterministically() {
     let r = radii_of(&out)[0];
     assert_eq!(r.to_bits(), 4.55f32.to_bits(), "a radius on the bound clamps exactly, got {r}");
 }
+
+// ---------------------------------------------------------------- bar tips, ramps and markers (02-01-03)
+
+/// One series over one category per value, for the bar-shape tests.
+fn solo(values: &[f64], kind: ChartKind) -> ChartData {
+    ChartData {
+        category_levels: vec![],
+        palette: vec![],
+        categories: (0..values.len()).map(|i| format!("C{i}")).collect(),
+        series: vec![series("S", values, [200, 80, 40, 255], kind)],
+    }
+}
+
+/// The radii of every rect a chart emitted, in order.
+fn rect_radii(prims: &[Prim]) -> Vec<[f32; 4]> {
+    prims
+        .iter()
+        .filter_map(|p| match p {
+            Prim::Rect { radii, .. } => Some(*radii),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn bar_radii_point_outward_for_both_signs() {
+    let mut c = chart(ChartKind::ColumnClustered);
+    c.data_labels = false;
+    let prims = render(&c, &solo(&[3.0, -3.0], ChartKind::ColumnClustered), 640.0, 400.0, &ApproxMeasure);
+    let radii = rect_radii(&prims);
+    let up = radii.iter().find(|r| r[0] > 0.0).copied().expect("a positive column rounds away from the axis");
+    assert!(up[0] == up[1] && up[2] == 0.0 && up[3] == 0.0, "top corners only, got {up:?}");
+    let down = radii.iter().find(|r| r[2] > 0.0).copied().expect("a negative column rounds below the axis");
+    assert!(down[2] == down[3] && down[0] == 0.0 && down[1] == 0.0, "bottom corners only, got {down:?}");
+
+    let mut hb = chart(ChartKind::BarClustered);
+    hb.data_labels = false;
+    let prims = render(&hb, &solo(&[3.0, -3.0], ChartKind::BarClustered), 640.0, 400.0, &ApproxMeasure);
+    let radii = rect_radii(&prims);
+    let pos = radii.iter().find(|r| r[1] > 0.0).copied().expect("a positive bar rounds at its far end");
+    assert!(pos[1] == pos[2] && pos[0] == 0.0 && pos[3] == 0.0, "right corners only, got {pos:?}");
+    let neg = radii.iter().find(|r| r[0] > 0.0).copied().expect("a negative bar rounds at its far end");
+    assert!(neg[0] == neg[3] && neg[1] == 0.0 && neg[2] == 0.0, "left corners only, got {neg:?}");
+}
+
+#[test]
+fn a_stacked_middle_segment_stays_square() {
+    let mut c = chart(ChartKind::ColumnStacked);
+    c.data_labels = false;
+    let d = ChartData {
+        category_levels: vec![],
+        palette: vec![],
+        categories: vec!["C0".into()],
+        series: vec![
+            series("A", &[10.0], [200, 80, 40, 255], ChartKind::ColumnStacked),
+            series("B", &[20.0], [20, 96, 130, 255], ChartKind::ColumnStacked),
+            series("C", &[30.0], [25, 107, 36, 255], ChartKind::ColumnStacked),
+        ],
+    };
+    let prims = render(&c, &d, 640.0, 400.0, &ApproxMeasure);
+    let radii = rect_radii(&prims);
+    let rounded = radii.iter().filter(|r| r[0] > 0.0 || r[2] > 0.0).count();
+    assert_eq!(rounded, 1, "only the segment at the far end of the stack rounds");
+    assert!(radii.iter().filter(|r| r[0] == 0.0 && r[2] == 0.0).all(|r| *r == [0.0; 4]), "an interior segment is square");
+}
+
+#[test]
+fn hairline_bars_stay_square() {
+    let mut c = chart(ChartKind::ColumnClustered);
+    c.data_labels = false;
+    c.legend = LegendPos::None;
+    let values: Vec<f64> = (0..400).map(|i| (i % 7) as f64 + 1.0).collect();
+    let d = ChartData {
+        category_levels: vec![],
+        palette: vec![],
+        categories: (0..values.len()).map(|i| format!("C{i}")).collect(),
+        series: vec![series("S", &values, [200, 80, 40, 255], ChartKind::ColumnClustered)],
+    };
+    let prims = render(&c, &d, 120.0, 300.0, &ApproxMeasure);
+    let radii = rect_radii(&prims);
+    assert!(!radii.is_empty(), "the chart still draws");
+    assert!(radii.iter().all(|r| *r == [0.0; 4]), "a merged hairline run has no roundable tip");
+}
+
+#[test]
+fn a_bar_ramp_runs_along_the_value_axis() {
+    let mut c = chart(ChartKind::ColumnClustered);
+    c.data_labels = false;
+    let prims = render(&c, &solo(&[3.0, 5.0], ChartKind::ColumnClustered), 640.0, 400.0, &ApproxMeasure);
+    let ramps: Vec<&Fill> = prims
+        .iter()
+        .filter_map(|p| match p {
+            Prim::Rect { fill: Some(f @ Fill::Linear { .. }), .. } => Some(f),
+            _ => None,
+        })
+        .collect();
+    assert!(!ramps.is_empty(), "bars carry a ramp");
+    for f in ramps {
+        if let Fill::Linear { from, to, start, end } = f {
+            assert_eq!(start[0], end[0], "a column's ramp is vertical");
+            assert!(end[1] < start[1], "it runs from the baseline up to the value end");
+            assert_eq!(from[3] - to[3], 64, "a 255-alpha series fades by GRADIENT_SHEEN_ALPHA");
+        }
+    }
+}
+
+#[test]
+fn markers_keep_the_white_ring_at_the_lock_weight() {
+    let white = [255, 255, 255, 255];
+    for style in [0, 4] {
+        let mut c = chart(ChartKind::LineMarkers);
+        c.style = style;
+        let prims = render(&c, &sample(ChartKind::LineMarkers), 640.0, 400.0, &ApproxMeasure);
+        let rings: Vec<(Rgba, f32)> = prims
+            .iter()
+            .filter_map(|p| match p {
+                Prim::Circle { stroke: Some(s), .. } | Prim::Polygon { stroke: Some(s), .. } => Some(*s),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rings.len(), 18, "one ringed marker per point on style {style}");
+        assert!(rings.iter().all(|s| *s == (white, 0.75)), "the ring is white at the lock weight on style {style}");
+    }
+}
+
+#[test]
+fn every_marker_shape_has_a_distinct_hull_and_the_same_ring() {
+    use crate::render::shape::{MarkerGeometry, all_shapes, geometry};
+    let mut geometries = Vec::new();
+    let mut hulls: Vec<Vec<[f32; 2]>> = Vec::new();
+    for shape in all_shapes() {
+        let g = geometry(shape, 10.0, 20.0, 3.0);
+        match &g {
+            MarkerGeometry::Circle { r } => assert_eq!(*r, 3.0, "a circle keeps its radius"),
+            MarkerGeometry::Polygon(pts) => {
+                assert!((3..=4).contains(&pts.len()), "a hull is at most four points: {pts:?}");
+                hulls.push(pts.clone());
+            }
+        }
+        geometries.push(g);
+    }
+    assert_eq!(hulls.len(), 4, "four hulls plus the circle");
+    for i in 0..hulls.len() {
+        for j in i + 1..hulls.len() {
+            assert_ne!(hulls[i], hulls[j], "hulls {i} and {j} are the same shape");
+        }
+    }
+    for i in 0..geometries.len() {
+        for j in i + 1..geometries.len() {
+            assert_ne!(geometries[i], geometries[j], "shapes {i} and {j} are the same");
+        }
+    }
+}
+
+#[test]
+fn legend_swatches_follow_the_marker_shape_without_a_ring() {
+    use crate::render::shape::{MarkerGeometry, MarkerShape, geometry};
+    let mut c = chart(ChartKind::LineMarkers);
+    c.legend = LegendPos::Bottom;
+    let prims = render(&c, &sample(ChartKind::LineMarkers), 640.0, 400.0, &ApproxMeasure);
+    let swatches: Vec<&Prim> = prims.iter().filter(|p| matches!(p, Prim::Circle { stroke: None, .. })).collect();
+    assert!(!swatches.is_empty(), "a line legend draws a marker swatch");
+    for p in swatches {
+        if let Prim::Circle { cx, cy, r, .. } = p {
+            match geometry(MarkerShape::Circle, *cx, *cy, *r) {
+                MarkerGeometry::Circle { r: want } => assert_eq!(*r, want),
+                MarkerGeometry::Polygon(_) => panic!("a circle swatch stays a circle"),
+            }
+        }
+    }
+}

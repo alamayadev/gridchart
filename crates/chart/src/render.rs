@@ -17,6 +17,7 @@ mod frame;
 mod kinds;
 mod legend;
 mod lines;
+pub(crate) mod shape;
 mod table;
 mod trend;
 
@@ -33,6 +34,10 @@ const DARK_TEXT: Rgba = [0x26, 0x26, 0x26, 0xFF];
 const WHITE: Rgba = [0xFF, 0xFF, 0xFF, 0xFF];
 pub(crate) const UP: Rgba = [0x3E, 0x9B, 0x5F, 0xFF];
 pub(crate) const DOWN: Rgba = [0xD6, 0x4F, 0x45, 0xFF];
+/// Ring weight on a marker. The white separator reads the same on the light and the dark preset, so
+/// it is a fixed visual decision of the style contract, not a style token: change [`WHITE`] and this
+/// constant together to reverse it.
+pub(crate) const MARKER_RING_WEIGHT: f32 = 0.75;
 
 const TITLE_SIZE: f32 = 14.0;
 const LABEL_SIZE: f32 = 9.0;

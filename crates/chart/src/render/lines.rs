@@ -1,5 +1,6 @@
 use super::frame::Bx;
-use super::{Ctx, MAX_LINE_PTS, MAX_MARKERS, Prim, Rgba, WHITE};
+use super::shape::{self, MarkerGeometry, MarkerShape};
+use super::{Ctx, MARKER_RING_WEIGHT, MAX_LINE_PTS, MAX_MARKERS, Prim, Rgba, WHITE};
 use std::collections::HashSet;
 
 // ---------------------------------------------------------------- helpers
@@ -209,14 +210,48 @@ fn catmull(p0: [f32; 2], p1: [f32; 2], p2: [f32; 2], p3: [f32; 2], t: f32) -> [f
     o
 }
 
-pub(super) fn draw_markers(ctx: &mut Ctx, pts: impl Iterator<Item = [f32; 2]>, r: f32, color: Rgba) {
+pub(super) fn draw_markers(ctx: &mut Ctx, pts: impl Iterator<Item = [f32; 2]>, r: f32, color: Rgba, shape: MarkerShape) {
     let mut seen = HashSet::new();
+    let ring = Some((WHITE, MARKER_RING_WEIGHT));
     for p in pts {
         if seen.len() >= MAX_MARKERS {
             break;
         }
         if seen.insert(((p[0] * 0.5) as i32, (p[1] * 0.5) as i32)) {
-            ctx.out.push(Prim::Circle { cx: p[0], cy: p[1], r, fill: Some(color), stroke: Some((WHITE, 0.75)) });
+            match shape::geometry(shape, p[0], p[1], r) {
+                MarkerGeometry::Circle { r } => {
+                    ctx.out.push(Prim::Circle { cx: p[0], cy: p[1], r, fill: Some(color), stroke: ring });
+                }
+                MarkerGeometry::Polygon(pts) => {
+                    ctx.out.push(Prim::Polygon { pts, fill: color, stroke: ring });
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod marker_tests {
+    use super::*;
+
+    fn prims_for(shape: MarkerShape, pts: &[[f32; 2]]) -> Vec<Prim> {
+        let mut ctx = Ctx { out: Vec::new(), m: &crate::ApproxMeasure, style: crate::resolve::style::chart_style(0) };
+        draw_markers(&mut ctx, pts.iter().copied(), 3.0, [10, 20, 30, 255], shape);
+        ctx.out
+    }
+
+    #[test]
+    fn every_shape_costs_one_ringed_primitive_per_point() {
+        for shape in shape::all_shapes() {
+            let out = prims_for(shape, &[[10.0, 20.0], [40.0, 50.0]]);
+            assert_eq!(out.len(), 2, "one primitive per point for {shape:?}");
+            for p in &out {
+                let stroke = match p {
+                    Prim::Circle { stroke, .. } | Prim::Polygon { stroke, .. } => *stroke,
+                    other => panic!("{shape:?} drew {other:?}"),
+                };
+                assert_eq!(stroke, Some((WHITE, MARKER_RING_WEIGHT)), "{shape:?} keeps the white ring");
+            }
         }
     }
 }
