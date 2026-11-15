@@ -53,6 +53,9 @@ const MIN_ROUNDED_BAR_PX: f32 = 3.0;
 const BAR_RADIUS_FRACTION: f32 = 0.25;
 /// Far-stop alpha of a bar's sheen ramp, as a fraction of the series colour's alpha.
 const GRADIENT_SHEEN_ALPHA: f32 = 0.75;
+/// A ramp shorter than this on both axes is not resolvable by any of the four backends (sub-pixel
+/// at every zoom a chart is drawn at): it degrades to its start colour.
+const MIN_GRADIENT_SPAN: f32 = 1e-4;
 /// Most wedges a doughnut draws for the whole chart. The per-series and per-category limits do not
 /// bound their product: 255 series of 20,000 categories would be millions of wedges. Every drawable
 /// ring shares this budget, so the innermost ring keeps its largest slices and the outer rings are
@@ -302,6 +305,29 @@ fn clamp_stroke(s: Option<(Rgba, f32)>) -> Option<(Rgba, f32)> {
     s.filter(|(_, w)| fin(*w) && *w > 0.0).map(|(c, w)| (c, w.min(50.0)))
 }
 
+/// D-03: a ramp a backend cannot resolve degrades to its start colour, never to a dropped shape.
+fn clamp_fill(f: Paint) -> Paint {
+    let Some(Fill::Linear { from, to, start, end }) = f else { return f };
+    if !(fin(start[0]) && fin(start[1]) && fin(end[0]) && fin(end[1])) {
+        return Some(Fill::solid(from));
+    }
+    if (end[0] - start[0]).abs() < MIN_GRADIENT_SPAN && (end[1] - start[1]).abs() < MIN_GRADIENT_SPAN {
+        return Some(Fill::solid(from));
+    }
+    Some(Fill::Linear { from, to, start, end })
+}
+
+/// D-03: radii a backend cannot honour degrade to square corners, never to a dropped shape. The
+/// bound is half the short side, computed before the clamp so `f32::clamp` never sees a NaN bound;
+/// a radii array with any non-finite corner is hostile as a whole and goes fully sharp.
+fn clamp_radii(radii: [f32; 4], w: f32, h: f32) -> [f32; 4] {
+    if !radii.iter().all(|r| fin(*r)) {
+        return [0.0; 4];
+    }
+    let bound = (w.min(h) / 2.0).max(0.0);
+    radii.map(|r| r.clamp(0.0, bound))
+}
+
 /// Drops non-finite primitives and clamps every coordinate into the `w`×`h` box.
 pub(crate) fn finalize(prims: Vec<Prim>, w: f32, h: f32) -> Vec<Prim> {
     let cx = |v: f32| v.clamp(0.0, w);
@@ -319,8 +345,8 @@ pub(crate) fn finalize(prims: Vec<Prim>, w: f32, h: f32) -> Vec<Prim> {
                 if x1 - x0 <= 0.0 || y1 - y0 <= 0.0 {
                     return None;
                 }
-                let limit = (x1 - x0).min(y1 - y0) / 2.0;
-                let radii = radii.map(|r| if fin(r) { r.clamp(0.0, limit) } else { 0.0 });
+                let radii = clamp_radii(radii, x1 - x0, y1 - y0);
+                let fill = clamp_fill(fill);
                 Some(Prim::Rect { x: x0, y: y0, w: x1 - x0, h: y1 - y0, fill, stroke: clamp_stroke(stroke), radii })
             }
             Prim::Line { pts, color, width, dash } => {

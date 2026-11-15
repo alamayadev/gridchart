@@ -1899,3 +1899,62 @@ fn the_producer_gives_a_bar_rounded_outward_tips() {
     assert!(up, "a positive column rounds the two tips away from the baseline");
     assert!(down, "a negative column rounds the two tips below the baseline");
 }
+
+// ---------------------------------------------------------------- sanitizer: ramps and radii (02-01-02)
+
+/// A rect at the box origin with the given paint and radii, for the finalize pass.
+fn rect_of(fill: Paint, radii: [f32; 4], w: f32, h: f32) -> Prim {
+    Prim::Rect { x: 0.0, y: 0.0, w, h, fill, stroke: None, radii }
+}
+
+/// The single surviving rect of a one-primitive finalize pass in a `w`x`h` box.
+fn only_rect(p: Prim, w: f32, h: f32) -> Prim {
+    let mut out = crate::render::finalize(vec![p], w, h);
+    assert_eq!(out.len(), 1, "bad payload degrades, only absent geometry is dropped (D-03)");
+    out.pop().expect("one primitive")
+}
+
+fn radii_of(p: &Prim) -> [f32; 4] {
+    match p {
+        Prim::Rect { radii, .. } => *radii,
+        other => panic!("expected a rect, got {other:?}"),
+    }
+}
+
+fn fill_of(p: &Prim) -> Paint {
+    match p {
+        Prim::Rect { fill, .. } => *fill,
+        other => panic!("expected a rect, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_zero_length_gradient_degrades_to_its_start_colour() {
+    let from = [200, 20, 10, 255];
+    let ramp = Fill::Linear { from, to: [10, 20, 200, 128], start: [22.0, 22.0], end: [22.0, 22.0] };
+    let out = only_rect(rect_of(Some(ramp), [0.0; 4], 60.0, 60.0), 100.0, 100.0);
+    assert_eq!(fill_of(&out), Some(Fill::Solid(from)), "an unresolvable ramp degrades to its start colour");
+}
+
+#[test]
+fn hostile_radii_become_sharp_corners_not_panics() {
+    let out = only_rect(rect_of(None, [f32::NAN, f32::INFINITY, -2.0, 1e30], 40.0, 40.0), 100.0, 100.0);
+    assert_eq!(radii_of(&out), [0.0; 4], "a hostile radii array degrades to square corners");
+}
+
+#[test]
+fn radii_are_clamped_independently_to_half_the_short_side() {
+    let wide = only_rect(rect_of(None, [50.0, 3.0, 1.0, 0.0], 100.0, 20.0), 100.0, 20.0);
+    assert_eq!(radii_of(&wide), [10.0, 3.0, 1.0, 0.0], "each corner clamps on its own");
+    let square = only_rect(rect_of(None, [6.0; 4], 9.0, 9.0), 9.0, 9.0);
+    assert_eq!(radii_of(&square), [4.5; 4], "half the short side is the bound");
+}
+
+#[test]
+fn precision_is_exact_at_the_endpoints_and_midpoint_rounds_deterministically() {
+    let ramp = Fill::Linear { from: [7, 9, 11, 200], to: [3, 5, 7, 100], start: [0.0, 0.0], end: [10.0, 10.0] };
+    assert_eq!(ramp.start(), [7, 9, 11, 200], "the start stop is exact, not rounded");
+    let out = only_rect(rect_of(None, [4.55; 4], 9.10, 9.10), 9.10, 9.10);
+    let r = radii_of(&out)[0];
+    assert_eq!(r.to_bits(), 4.55f32.to_bits(), "a radius on the bound clamps exactly, got {r}");
+}
