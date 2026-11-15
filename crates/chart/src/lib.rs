@@ -14,6 +14,7 @@ mod axis;
 mod raster;
 mod render;
 mod resolve;
+mod sanitize;
 mod sparkline;
 mod trend;
 

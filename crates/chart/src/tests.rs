@@ -2129,3 +2129,41 @@ fn legend_swatches_follow_the_marker_shape_without_a_ring() {
         }
     }
 }
+
+// ---------------------------------------------------------------- central sanitizer (02-01-04)
+
+#[test]
+fn the_fixture_survives_hostile_numbers_without_panicking() {
+    let prims = vec![
+        Prim::Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 60.0,
+            h: 40.0,
+            fill: Some(Fill::Linear { from: [10, 20, 30, 255], to: [40, 50, 60, 128], start: [f32::NAN, f32::NAN], end: [60.0, 0.0] }),
+            stroke: Some(([1, 2, 3, 255], 1.0)),
+            radii: [f32::NAN, f32::INFINITY, -1.0, 1e30],
+        },
+        Prim::Rect { x: 10.0, y: 10.0, w: 0.0, h: 20.0, fill: Some(Fill::solid([5, 6, 7, 255])), stroke: None, radii: [0.0; 4] },
+        Prim::Circle { cx: 20.0, cy: 20.0, r: 0.0, fill: Some([8, 9, 10, 255]), stroke: None },
+        Prim::Text {
+            x: 5.0,
+            y: 5.0,
+            text: String::new(),
+            size: 10.0,
+            color: [0, 0, 0, 255],
+            bold: false,
+            align: HAlign::Left,
+            valign: VAlign::Top,
+            rotation: 0.0,
+        },
+    ];
+    let out = crate::render::finalize(prims, 100.0, 80.0);
+    assert!(!out.is_empty(), "a shape is never dropped for a hostile fill or radius, only for having no geometry");
+    for p in &out {
+        if let Prim::Rect { w, h, radii, .. } = p {
+            assert!(radii.iter().all(|r| r.is_finite()), "finite radii, got {radii:?}");
+            assert!(radii.iter().all(|r| *r <= w.min(*h) / 2.0 + 1e-3), "radii inside the box, got {radii:?} for {w}x{h}");
+        }
+    }
+}
