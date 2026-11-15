@@ -333,8 +333,8 @@ pub fn rasterize(prims: &[Prim], w: u32, h: u32, background: Rgba) -> Vec<u8> {
                 }
             }
             Prim::Polygon { pts, fill, stroke } => {
-                if let Some(f) = fill {
-                    cv.fill(&vec![pts.clone()], *f);
+                if let Some(f) = *fill {
+                    cv.fill(&vec![pts.clone()], f);
                 }
                 if let Some((c, sw)) = stroke {
                     for path in stroke_paths(pts, *sw, false, true) {
@@ -534,5 +534,39 @@ mod tests {
         let covered: Vec<usize> = (0..4).filter(|&x| img.get(x * 4 + 3).copied().unwrap_or(0) > 0).collect();
         assert_eq!(covered, vec![0], "exactly one pixel takes coverage");
         assert_eq!(img.get(0..3), Some(&[10u8, 200, 40][..]), "and it carries the fill colour");
+    }
+
+    #[test]
+    fn a_gradient_polygon_and_wedge_rasterise_as_a_ramp() {
+        let poly = Prim::Polygon {
+            pts: vec![[0.0, 0.0], [20.0, 0.0], [20.0, 100.0], [0.0, 100.0]],
+            fill: Some(Fill::Linear { from: [200, 10, 10, 255], to: [10, 10, 200, 255], start: [0.0, 0.5], end: [0.0, 99.5] }),
+            stroke: None,
+        };
+        let img = rasterize(&[poly], 20, 100, [0, 0, 0, 0]);
+        let at = |x: usize, y: usize| (y * 20 + x) * 4;
+        assert_eq!(img.get(at(10, 0)..at(10, 0) + 4), Some(&[200u8, 10, 10, 255][..]), "polygon ramp starts at the near stop");
+        assert_eq!(img.get(at(10, 99)..at(10, 99) + 4), Some(&[10u8, 10, 200, 255][..]), "polygon ramp ends at the far stop");
+        let mid = img.get(at(10, 50)..at(10, 50) + 4).unwrap_or_default();
+        assert!(mid[0] > 10 && mid[0] < 200 && mid[2] > 10 && mid[2] < 200, "polygon ramp interpolates mid-scan: {mid:?}");
+
+        // Full-circle wedge so mid-point samples sit unambiguously inside the filled ring.
+        let wedge = Prim::Wedge {
+            cx: 50.0,
+            cy: 50.0,
+            r_outer: 40.0,
+            r_inner: 10.0,
+            a0: 0.0,
+            a1: std::f32::consts::TAU,
+            fill: Some(Fill::Linear { from: [200, 10, 10, 255], to: [10, 10, 200, 255], start: [50.0, 10.5], end: [50.0, 89.5] }),
+            stroke: None,
+        };
+        let img = rasterize(&[wedge], 100, 100, [0, 0, 0, 0]);
+        let wat = |x: usize, y: usize| (y * 100 + x) * 4;
+        let top = img.get(wat(50, 11)..wat(50, 11) + 4).unwrap_or_default();
+        let bottom = img.get(wat(50, 89)..wat(50, 89) + 4).unwrap_or_default();
+        assert!(top[0] > bottom[0], "wedge ramp near stop is redder at the axis start: top={top:?} bottom={bottom:?}");
+        assert!(bottom[2] > top[2], "wedge ramp far stop is bluer at the axis end: top={top:?} bottom={bottom:?}");
+        assert!(top[3] == 255 && bottom[3] == 255, "sample points land inside the wedge");
     }
 }
