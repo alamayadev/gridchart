@@ -14,6 +14,10 @@ const MAX_SIDE: f32 = 16_384.0;
 /// left makes the export fail rather than grow without bound or be dropped without a word.
 pub(crate) const MAX_PAGE_SVG_BYTES: usize = 64 * 1024 * 1024;
 
+/// Most distinct linear gradients written into one `<defs>`. A shape whose ramp was not collected
+/// keeps its solid `from` colour rather than referencing a definition that was never written.
+const MAX_SVG_GRADIENTS: usize = 64;
+
 struct HelveticaMeasure;
 
 impl gridcraft_chart::Measure for HelveticaMeasure {
@@ -52,23 +56,32 @@ fn prims_svg_within(prims: &[Prim], w: f32, h: f32, style: &str, budget: usize) 
         out,
         "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\" font-family=\"Helvetica,Arial,sans-serif\" style=\"{style}\">"
     );
+    let grads = gradients(prims);
+    defs(&mut out, &grads);
     for p in prims {
         if out.len() > budget {
             return None;
         }
         match p {
             Prim::Rect { x, y, w, h, fill, stroke, radii } => {
-                let _ = write!(out, "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\"", num(*x), num(*y), num(*w), num(*h));
-                // Plan 02-01 keeps one scalar radius per rect: radii[0] is the old `radius`.
-                if radii[0] > 0.0 {
-                    let _ = write!(out, " rx=\"{}\"", num(radii[0]));
+                let r = clamped_radii(*w, *h, *radii);
+                let grad = fill.as_ref().and_then(|g| gradient_id(&grads, g));
+                // Four equal corners keep the compact `<rect rx>`; SVG has no per-corner radius,
+                // so anything else becomes a `<path>` of four arcs.
+                if r[0] == r[1] && r[1] == r[2] && r[2] == r[3] {
+                    let _ = write!(out, "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\"", num(*x), num(*y), num(*w), num(*h));
+                    if r[0] > 0.0 {
+                        let _ = write!(out, " rx=\"{}\"", num(r[0]));
+                    }
+                } else {
+                    let _ = write!(out, "<path d=\"{}\"", rounded_path(*x, *y, *w, *h, r));
                 }
-                paint(&mut out, fill.as_ref().map(Fill::start), *stroke);
+                paint(&mut out, *fill, grad, *stroke);
                 out.push_str("/>");
             }
             Prim::Line { pts, color, width, dash } => {
                 let _ = write!(out, "<polyline points=\"{}\"", points(pts));
-                paint(&mut out, None, Some((*color, *width)));
+                paint(&mut out, None, None, Some((*color, *width)));
                 if *dash {
                     out.push_str(" stroke-dasharray=\"3 2\"");
                 }
@@ -76,17 +89,17 @@ fn prims_svg_within(prims: &[Prim], w: f32, h: f32, style: &str, budget: usize) 
             }
             Prim::Polygon { pts, fill, stroke } => {
                 let _ = write!(out, "<polygon points=\"{}\"", points(pts));
-                paint(&mut out, Some(*fill), *stroke);
+                paint(&mut out, Some(Fill::solid(*fill)), None, *stroke);
                 out.push_str("/>");
             }
             Prim::Wedge { cx, cy, r_outer, r_inner, a0, a1, fill, stroke } => {
                 let _ = write!(out, "<path d=\"{}\"", wedge_path(*cx, *cy, *r_outer, *r_inner, *a0, *a1));
-                paint(&mut out, Some(*fill), *stroke);
+                paint(&mut out, Some(Fill::solid(*fill)), None, *stroke);
                 out.push_str("/>");
             }
             Prim::Circle { cx, cy, r, fill, stroke } => {
                 let _ = write!(out, "<circle cx=\"{}\" cy=\"{}\" r=\"{}\"", num(*cx), num(*cy), num(*r));
-                paint(&mut out, *fill, *stroke);
+                paint(&mut out, fill.map(Fill::solid), None, *stroke);
                 out.push_str("/>");
             }
             Prim::Text { x, y, text, size, color, bold, align, valign, rotation } => {
@@ -116,17 +129,97 @@ fn prims_svg_within(prims: &[Prim], w: f32, h: f32, style: &str, budget: usize) 
     (out.len() <= budget).then_some(out)
 }
 
-/// Fill and stroke attributes of an open shape element; the caller closes it.
-fn paint(out: &mut String, fill: Option<Rgba>, stroke: Option<(Rgba, f32)>) {
-    match fill {
-        Some(c) => {
-            let _ = write!(out, " fill=\"{}\"{}", hex(c), opacity("fill", c));
+/// Fill and stroke attributes of an open shape element; the caller closes it. `grad` is the index
+/// of the written `<linearGradient>` when the fill is one of the collected ramps.
+fn paint(out: &mut String, fill: Option<Fill>, grad: Option<usize>, stroke: Option<(Rgba, f32)>) {
+    match (fill, grad) {
+        (Some(_), Some(i)) => {
+            let _ = write!(out, " fill=\"url(#g{i})\"");
         }
-        None => out.push_str(" fill=\"none\""),
+        (Some(c), None) => {
+            let _ = write!(out, " fill=\"{}\"{}", hex(c.start()), opacity("fill", c.start()));
+        }
+        (None, _) => out.push_str(" fill=\"none\""),
     }
     if let Some((c, w)) = stroke {
         let _ = write!(out, " stroke=\"{}\" stroke-width=\"{}\"{}", hex(c), num(w), opacity("stroke", c));
     }
+}
+
+/// The distinct ramps used by the scene, in first-use order, up to [`MAX_SVG_GRADIENTS`].
+fn gradients(prims: &[Prim]) -> Vec<Fill> {
+    let mut out: Vec<Fill> = Vec::new();
+    for p in prims {
+        let Prim::Rect { fill: Some(f @ Fill::Linear { .. }), .. } = p else {
+            continue;
+        };
+        if out.len() >= MAX_SVG_GRADIENTS {
+            break;
+        }
+        if !out.contains(f) {
+            out.push(*f);
+        }
+    }
+    out
+}
+
+/// The index of a collected ramp, `None` when it was not collected (past the cap), in which case
+/// the shape paints its solid `from` colour instead of a dangling `url(#..)`.
+fn gradient_id(grads: &[Fill], fill: &Fill) -> Option<usize> {
+    grads.iter().position(|g| g == fill)
+}
+
+/// `<defs>` with one `userSpaceOnUse` axial gradient per collected ramp, or nothing at all.
+fn defs(out: &mut String, grads: &[Fill]) {
+    if grads.is_empty() {
+        return;
+    }
+    out.push_str("<defs>");
+    for (i, g) in grads.iter().enumerate() {
+        let Fill::Linear { from, to, start, end } = *g else {
+            continue;
+        };
+        let _ = write!(
+            out,
+            "<linearGradient id=\"g{i}\" gradientUnits=\"userSpaceOnUse\" x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\">",
+            num(start[0]),
+            num(start[1]),
+            num(end[0]),
+            num(end[1])
+        );
+        for (offset, c) in [(0, from), (1, to)] {
+            let _ = write!(out, "<stop offset=\"{offset}\" stop-color=\"{}\"{}", hex(c), opacity("stop", c));
+            out.push_str("/>");
+        }
+        out.push_str("</linearGradient>");
+    }
+    out.push_str("</defs>");
+}
+
+/// Each radius clamped on its own to the half-extent, a non-finite one to zero.
+fn clamped_radii(w: f32, h: f32, radii: [f32; 4]) -> [f32; 4] {
+    let limit = (w.min(h) / 2.0).max(0.0);
+    radii.map(|v| if v.is_finite() { v.clamp(0.0, limit) } else { 0.0 })
+}
+
+/// A rectangle with an independent radius per corner, as four arcs (clockwise from the top left).
+fn rounded_path(x: f32, y: f32, w: f32, h: f32, r: [f32; 4]) -> String {
+    let [nw, ne, se, sw] = r;
+    let (x1, y1) = (x + w, y + h);
+    let arc = |cx: f32, cy: f32, rad: f32| format!("A{r} {r} 0 0 1 {} {}", num(cx), num(cy), r = num(rad));
+    format!(
+        "M{} {} H{} {} V{} {} H{} {} V{} {} Z",
+        num(x + nw),
+        num(y),
+        num(x1 - ne),
+        arc(x1, y + ne, ne),
+        num(y1 - se),
+        arc(x1 - se, y1, se),
+        num(x + sw),
+        arc(x, y1 - sw, sw),
+        num(y + nw),
+        arc(x + nw, y, nw)
+    )
 }
 
 /// A pie or doughnut sector. Angles run clockwise from 12 o'clock, like the chart crate's.
@@ -223,6 +316,69 @@ mod tests {
     fn non_finite_numbers_do_not_break_the_markup() {
         let prims = [Prim::Circle { cx: f32::NAN, cy: f32::INFINITY, r: 1.0, fill: None, stroke: None }];
         assert!(prims_svg(&prims, 10.0, 10.0, "").contains("<circle cx=\"0\" cy=\"0\" r=\"1\" fill=\"none\"/>"));
+    }
+
+    /// A rect painted with a two-stop ramp: the SVG needs `<defs>` and a `url(#gN)` fill.
+    fn gradient_rect(fill: Fill) -> Prim {
+        Prim::Rect { x: 1.0, y: 2.0, w: 3.0, h: 4.0, fill: Some(fill), stroke: None, radii: [0.0; 4] }
+    }
+
+    fn ramp() -> Fill {
+        Fill::Linear { from: [200, 10, 10, 255], to: [10, 10, 200, 255], start: [0.0, 0.0], end: [0.0, 100.0] }
+    }
+
+    #[test]
+    fn a_gradient_rect_emits_defs_and_a_url_fill() {
+        let svg = prims_svg(&[gradient_rect(ramp())], 10.0, 10.0, "");
+        for part in [
+            "<defs><linearGradient id=\"g0\" gradientUnits=\"userSpaceOnUse\" x1=\"0\" y1=\"0\" x2=\"0\" y2=\"100\">",
+            "<stop offset=\"0\" stop-color=\"#c80a0a\"/>",
+            "<stop offset=\"1\" stop-color=\"#0a0ac8\"/>",
+            "</linearGradient></defs>",
+            "fill=\"url(#g0)\"",
+        ] {
+            assert!(svg.contains(part), "{part} in {svg}");
+        }
+        let defs = svg.find("<defs>").unwrap_or(0);
+        assert!(defs > 0 && defs < svg.find("url(#g0)").unwrap_or(0), "the defs come before the shapes: {svg}");
+    }
+
+    #[test]
+    fn two_identical_gradients_share_one_def() {
+        let svg = prims_svg(&[gradient_rect(ramp()), gradient_rect(ramp())], 10.0, 10.0, "");
+        assert_eq!(svg.matches("<linearGradient").count(), 1, "{svg}");
+        assert_eq!(svg.matches("fill=\"url(#g0)\"").count(), 2, "{svg}");
+        assert!(!svg.contains("url(#g1)"), "{svg}");
+    }
+
+    #[test]
+    fn defs_are_inside_the_byte_budget() {
+        let prims = [gradient_rect(ramp())];
+        let full = prims_svg(&prims, 10.0, 10.0, "");
+        assert!(full.contains("<linearGradient"), "the defs are written: {full}");
+        assert_eq!(prims_svg_within(&prims, 10.0, 10.0, "", full.len()), Some(full.clone()));
+        assert_eq!(prims_svg_within(&prims, 10.0, 10.0, "", full.len() - 1), None, "the defs count against the budget");
+    }
+
+    #[test]
+    fn asymmetric_corners_become_a_path_with_four_arcs() {
+        let solid = Some(Fill::solid([1, 2, 3, 255]));
+        let path = Prim::Rect { x: 0.0, y: 0.0, w: 20.0, h: 20.0, fill: solid, stroke: None, radii: [4.0, 0.0, 0.0, 0.0] };
+        let svg = prims_svg(&[path], 20.0, 20.0, "");
+        assert!(!svg.contains("<rect "), "{svg}");
+        assert_eq!(svg.matches(" A").count(), 4, "{svg}");
+        assert!(svg.contains("fill=\"#010203\""), "{svg}");
+        let round = Prim::Rect { x: 0.0, y: 0.0, w: 20.0, h: 20.0, fill: solid, stroke: None, radii: [4.0; 4] };
+        let svg = prims_svg(&[round], 20.0, 20.0, "");
+        assert!(svg.contains("<rect x=\"0\" y=\"0\" width=\"20\" height=\"20\" rx=\"4\" fill=\"#010203\"/>"), "{svg}");
+    }
+
+    #[test]
+    fn an_empty_scene_has_no_defs() {
+        let svg = prims_svg(&[], 10.0, 10.0, "");
+        assert!(svg.starts_with("<svg ") && !svg.contains("<defs"), "{svg}");
+        let flat = prims_svg(&[gradient_rect(Fill::solid([1, 2, 3, 255]))], 10.0, 10.0, "");
+        assert!(!flat.contains("<defs"), "a solid fill needs no defs: {flat}");
     }
 
     #[test]
