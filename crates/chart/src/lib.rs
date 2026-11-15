@@ -22,6 +22,14 @@ mod trend;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod grid_dash_tests {
+    #[test]
+    fn the_dash_pattern_is_one_constant_in_all_four_backends() {
+        assert_eq!(crate::GRID_DASH, (3.0, 2.0));
+    }
+}
+
 pub use gridcraft_model::{Chart, ChartKind, LegendPos, SparklineKind, Trendline, TrendlineKind};
 use serde::{Deserialize, Serialize};
 
@@ -39,6 +47,9 @@ pub use sparkline::render_sparkline;
 
 /// Straight (non-premultiplied) RGBA colour.
 pub type Rgba = [u8; 4];
+
+/// The one dash period every dashed chart gridline uses, in chart points: on 3.0, gap 2.0.
+pub const GRID_DASH: (f32, f32) = (3.0, 2.0);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HAlign {

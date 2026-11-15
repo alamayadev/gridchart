@@ -169,7 +169,8 @@ pub(super) fn draw_prims(pg: &mut Page, prims: &[gridcraft_chart::Prim], xf: Xf)
                 }
             }
             Prim::Line { pts, color, width, dash } => {
-                let d = if *dash { vec![3.0 * k, 2.0 * k] } else { vec![] };
+                let (on, off) = gridcraft_chart::GRID_DASH;
+                let d = if *dash { vec![on * k, off * k] } else { vec![] };
                 pg.polyline(&xf.pts(pts), (width * k).max(0.1), blend_over(*color, bg), &d);
             }
             Prim::Polygon { pts, fill, stroke } => {

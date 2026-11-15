@@ -264,7 +264,7 @@ fn stroke_paths(pts: &[[f32; 2]], width: f32, dash: bool, closed: bool) -> Vec<P
         // long dashed lines multiplies: together they would eagerly allocate megabytes of
         // geometry even when nothing of it reaches the canvas, so the total is capped too and
         // the line is drawn solid once the budget is gone.
-        let (on, off) = (width * 4.0, width * 3.0);
+        let (on, off) = crate::GRID_DASH;
         let mut out = Vec::new();
         let mut budget = 65_536usize;
         for (a, b) in segs {
@@ -426,6 +426,23 @@ mod tests {
         assert!(stroke_paths(&[[0.0, 0.0], [1e6, 0.0]], 1.0, true, false).len() <= 65_536);
         let prim = [Prim::Line { pts: vec![[0.0, 0.0], [10.0, 0.0]], color: [0, 0, 0, 255], width: 1.0, dash: true }];
         assert_eq!(rasterize(&prim, 1, 1, [0, 0, 0, 255]).len(), 4);
+    }
+
+    #[test]
+    fn raster_dashes_use_the_one_dash_pattern() {
+        // A dashed horizontal segment: the first dash ends 3.0 pt along and the second starts at 5.0.
+        let paths = super::stroke_paths(&[[0.0, 0.0], [100.0, 0.0]], 1.0, true, false);
+        assert!(paths.len() >= 2, "a 100 pt segment produces several dashes");
+        let first_end = paths[0][0][1][0];
+        let second_start = paths[1][0][0][0];
+        assert!(
+            (first_end - crate::GRID_DASH.0).abs() < 1e-4,
+            "first dash is {first_end}"
+        );
+        assert!(
+            (second_start - (crate::GRID_DASH.0 + crate::GRID_DASH.1)).abs() < 1e-4,
+            "gap ends at {second_start}"
+        );
     }
 
     /// D-01: a ramp is exactly its stop colours at both ends. The stops sit on the sample centres

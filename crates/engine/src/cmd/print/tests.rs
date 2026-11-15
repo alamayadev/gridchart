@@ -1266,3 +1266,33 @@ fn the_fixture_reaches_the_svg_and_the_pdf_rings() {
     assert!(contains(&pdf, &format!("/C1 [{} ", rgb_op(over(fixture::TO, bg)))), "the far stop is exact, composited against the card");
     assert!(contains(&pdf, &rgb_op(over(fixture::RING, bg))), "the marker ring is stroked");
 }
+
+#[test]
+fn the_svg_and_pdf_dashes_use_the_one_dash_pattern() {
+    use gridcraft_chart::GRID_DASH;
+    let prims = [gridcraft_chart::Prim::Line {
+        pts: vec![[0.0, 0.0], [100.0, 0.0]],
+        color: [0, 0, 0, 255],
+        width: 1.0,
+        dash: true,
+    }];
+    let svg = crate::chart_svg::prims_svg(&prims, 100.0, 10.0, "d");
+    assert!(
+        svg.contains(&format!("stroke-dasharray=\"{} {}\"", GRID_DASH.0, GRID_DASH.1)),
+        "SVG uses the shared dash: {svg}"
+    );
+    let mut doc = gridcraft_pdf::PdfDoc::new();
+    {
+        let pg = doc.add_page(100.0, 10.0);
+        super::draw::draw_prims(pg, &prims, super::draw::Xf { ox: 0.0, oy: 0.0, k: 1.0 });
+    }
+    let pdf = doc.finish();
+    assert!(contains(&pdf, "[3 2] 0 d"), "PDF uses the shared dash at k=1");
+    let mut doc2 = gridcraft_pdf::PdfDoc::new();
+    {
+        let pg = doc2.add_page(100.0, 10.0);
+        super::draw::draw_prims(pg, &prims, super::draw::Xf { ox: 0.0, oy: 0.0, k: 2.0 });
+    }
+    let pdf2 = doc2.finish();
+    assert!(contains(&pdf2, "[6 4] 0 d"), "PDF scales the shared dash by k");
+}

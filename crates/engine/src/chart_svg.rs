@@ -85,7 +85,8 @@ fn prims_svg_within(prims: &[Prim], w: f32, h: f32, style: &str, budget: usize) 
                 let _ = write!(out, "<polyline points=\"{}\"", points(pts));
                 paint(&mut out, None, None, Some((*color, *width)));
                 if *dash {
-                    out.push_str(" stroke-dasharray=\"3 2\"");
+                    let (on, off) = gridcraft_chart::GRID_DASH;
+                    let _ = write!(out, " stroke-dasharray=\"{} {}\"", num(on), num(off));
                 }
                 out.push_str("/>");
             }

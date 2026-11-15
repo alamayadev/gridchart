@@ -19,6 +19,11 @@ fn rgba(c: [u8; 4]) -> Color32 {
 /// primitive is built; this is the local backstop, because `paint_prims` is public.
 const MIN_RAMP_SPAN: f32 = 1.0e-4;
 
+/// The one dash period every dashed chart gridline uses, in screen pixels at zoom `z`.
+fn dash_px(z: f32) -> (f32, f32) {
+    (gridcraft_chart::GRID_DASH.0 * z, gridcraft_chart::GRID_DASH.1 * z)
+}
+
 /// `[nw, ne, se, sw]` chart-space radii as egui takes them: scaled, rounded, and clamped to the
 /// range `CornerRadius` can hold, with a hostile value treated as a square corner.
 fn corner_radius(radii: [f32; 4], z: f32) -> egui::CornerRadius {
@@ -192,7 +197,8 @@ pub fn paint_prims(p: &Painter, origin: Pos2, prims: &[Prim], z: f32) {
                     continue;
                 }
                 if *dash {
-                    p.extend(egui::Shape::dashed_line(&v, Stroke::new(width * z.max(0.5), rgba(*color)), 4.0 * z, 3.0 * z));
+                    let (on, off) = dash_px(z);
+                    p.extend(egui::Shape::dashed_line(&v, Stroke::new(width * z.max(0.5), rgba(*color)), on, off));
                 } else {
                     p.add(PathShape::line(v, PathStroke::new(width * z.max(0.5), rgba(*color))));
                 }
@@ -1089,5 +1095,10 @@ pub(crate) mod tests {
         let deg_cols = mesh_colours(&out_deg);
         out_deg.textures_delta.clear();
         assert!(!deg_cols.is_empty() && deg_cols.iter().all(|c| *c == rgba(from)), "a degenerate ramp paints flat in the near stop: {deg_cols:?}");
+    }
+
+    #[test]
+    fn egui_dashes_use_the_one_dash_pattern() {
+        assert_eq!(super::dash_px(2.0), (6.0, 4.0));
     }
 }
