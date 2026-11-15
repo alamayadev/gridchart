@@ -517,6 +517,119 @@ fn slice_seams_are_the_card_at_the_preset_weight() {
     }
 }
 
+/// One pie's slices: nine wide ones and one hairline. The wide ones label inside exactly as
+/// before; the hairline gets a three-point leader and a label anchored outside the rim.
+#[test]
+fn pie_labels_that_do_not_fit_inside_step_outside_with_a_leader() {
+    let palette: Vec<Rgba> = (0..10).map(|j| [(30 + j as u8 * 20), 96, 130, 255]).collect();
+    let d = ChartData {
+        category_levels: vec![],
+        palette: palette.clone(),
+        categories: (0..10).map(|j| format!("C{j}")).collect(),
+        series: vec![series("Only", &[100.0; 9].iter().chain([&0.4]).copied().collect::<Vec<f64>>().as_slice(), palette[0], ChartKind::Pie)],
+    };
+    let mut c = chart(ChartKind::Pie);
+    c.title = None;
+    c.legend = LegendPos::None;
+    let prims = render(&c, &d, 640.0, 400.0, &ApproxMeasure);
+    let (cx, cy, r) = prims
+        .iter()
+        .find_map(|p| match p {
+            Prim::Wedge { cx, cy, r_outer, .. } => Some((*cx, *cy, *r_outer)),
+            _ => None,
+        })
+        .expect("a wedge");
+    assert_eq!(prims.iter().filter(|p| matches!(p, Prim::Wedge { .. })).count(), 10, "all ten slices draw");
+    let ink = chart_style(0).text;
+    let leaders: Vec<&Prim> = prims
+        .iter()
+        .filter(|p| matches!(p, Prim::Line { pts, color, width, .. } if pts.len() == 3 && *color == ink && (*width - 1.0).abs() < 1e-6))
+        .collect();
+    assert_eq!(leaders.len(), 1, "exactly one three-point leader in text ink: {leaders:?}");
+    let Prim::Line { pts: lpts, .. } = leaders[0] else { panic!("leader") };
+    let dist = ((lpts[0][0] - cx).powi(2) + (lpts[0][1] - cy).powi(2)).sqrt();
+    assert!((dist - (r + 3.0)).abs() < 0.01, "the leader starts on the rim at outer + 3.0: {dist} vs {}", r + 3.0);
+    let anchored: Vec<&Prim> = prims
+        .iter()
+        .filter(|p| matches!(p, Prim::Text { x, y, size, .. } if *size == 9.0 && (*x - lpts[2][0]).abs() < 1e-3 && (*y - lpts[2][1]).abs() < 1e-3))
+        .collect();
+    assert_eq!(anchored.len(), 1, "exactly one label sits on the leader's end");
+    let mut anchors: Vec<(f32, f32)> = prims
+        .iter()
+        .filter_map(|p| match p {
+            Prim::Text { x, y, size, .. } if *size == 9.0 => Some((*x, *y)),
+            _ => None,
+        })
+        .collect();
+    anchors.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    let before = anchors.len();
+    anchors.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-6 && (a.1 - b.1).abs() < 1e-6);
+    assert_eq!(anchors.len(), before, "no label emitted twice");
+    // The same hairline on the dark preset carries the dark family's text ink, not the inside
+    // contrast ink `on(fill)` would pick.
+    let mut c4 = c;
+    c4.style = 4;
+    let prims4 = render(&c4, &d, 640.0, 400.0, &ApproxMeasure);
+    let outside = prims4
+        .iter()
+        .find(|p| matches!(p, Prim::Line { pts, color, width, .. } if pts.len() == 3 && *color == chart_style(4).text && (*width - 1.0).abs() < 1e-6))
+        .expect("the dark leader");
+    let Prim::Line { pts: l4, .. } = outside else { panic!("leader") };
+    let label4 = prims4
+        .iter()
+        .find_map(|p| match p {
+            Prim::Text { x, y, color, size, .. } if *size == 9.0 && (*x - l4[2][0]).abs() < 1e-3 && (*y - l4[2][1]).abs() < 1e-3 => Some(*color),
+            _ => None,
+        })
+        .expect("the dark outside label");
+    assert_eq!(label4, chart_style(4).text, "the outside label uses the preset's text ink");
+}
+
+/// Every label that already fits inside keeps its exact anchor, alignment and contrast ink: the
+/// fallback only adds a path for labels that were dropped before.
+#[test]
+fn pie_labels_keep_their_inside_placement() {
+    let c = chart(ChartKind::Pie);
+    let d = sample(ChartKind::Pie);
+    let prims = render(&c, &d, 640.0, 400.0, &ApproxMeasure);
+    assert!(
+        prims.iter().all(
+            |p| !matches!(p, Prim::Line { pts, color, width, .. } if pts.len() == 3 && *color == chart_style(0).text && (*width - 1.0).abs() < 1e-6)
+        ),
+        "no leader on a pie whose labels all fit"
+    );
+    let ink = |fill: Rgba| -> Rgba {
+        let luma = 0.299 * fill[0] as f32 + 0.587 * fill[1] as f32 + 0.114 * fill[2] as f32;
+        if luma < 150.0 { [0xFF; 4] } else { [0x26, 0x26, 0x26, 0xFF] }
+    };
+    let mut a = 0.0f32;
+    for p in &prims {
+        if let Prim::Wedge { a0, a1, fill, .. } = p {
+            let mid = (a0 + a1) / 2.0;
+            let fill = match fill {
+                Some(Fill::Solid(c)) => *c,
+                _ => continue,
+            };
+            let (cx, cy, r) = prims
+                .iter()
+                .find_map(|q| match q {
+                    Prim::Wedge { cx, cy, r_outer, .. } => Some((*cx, *cy, *r_outer)),
+                    _ => None,
+                })
+                .expect("a wedge");
+            let rr = r * 0.65;
+            let (want_x, want_y) = (cx + rr * mid.sin(), cy - rr * mid.cos());
+            let hit = prims.iter().any(|q| {
+                matches!(q, Prim::Text { x, y, size, color, align, .. } if *size == 9.0
+                && (*x - want_x).abs() < 1e-3 && (*y - want_y).abs() < 1e-3
+                && *color == ink(fill) && *align == HAlign::Center)
+            });
+            assert!(hit, "slice at {a0}..{a1} keeps its inside anchor");
+            a = *a1;
+        }
+    }
+}
+
 #[test]
 fn legend_counts() {
     let d = sample(ChartKind::ColumnClustered);

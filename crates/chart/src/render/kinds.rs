@@ -223,6 +223,67 @@ fn wedge(ctx: &mut Ctx, ring: &Ring, a0: f32, sweep: f32, fill: Rgba) {
     }
 }
 
+/// One slice's label inputs: everything `slice_label` needs, so the shared helper never grows a
+/// positional-argument list long enough for `clippy::too_many_arguments` to fire.
+struct Slice {
+    cx: f32,
+    cy: f32,
+    outer: f32,
+    inner: f32,
+    mid: f32,
+    sweep: f32,
+    text: String,
+    fill: Rgba,
+    inside_rr: f32,
+}
+
+/// A placed label: the text anchor, its ink, its horizontal anchor and an optional leader polyline.
+struct SliceLabel {
+    x: f32,
+    y: f32,
+    text: String,
+    ink: Rgba,
+    align: HAlign,
+    leader: Option<Vec<[f32; 2]>>,
+}
+
+/// One slice label: inside at the slice's mid-radius when it fits, otherwise — and only when
+/// `allow_outside` — outside the rim with a three-point leader in the preset's text ink. `None`
+/// when nothing fits.
+fn slice_label(ctx: &Ctx, area: Bx, s: Slice, allow_outside: bool) -> Option<SliceLabel> {
+    let room = s.sweep * s.inside_rr;
+    if ctx.tw(&s.text, LABEL_SIZE) <= room.max(s.outer - s.inner) && room >= LABEL_SIZE {
+        return Some(SliceLabel {
+            x: s.cx + s.inside_rr * s.mid.sin(),
+            y: s.cy - s.inside_rr * s.mid.cos(),
+            text: s.text,
+            ink: on(s.fill),
+            align: HAlign::Center,
+            leader: None,
+        });
+    }
+    if !allow_outside {
+        return None;
+    }
+    // Outside: anchor on the rim, elbow one step out, then a short horizontal run towards the
+    // side the mid-angle points at. Everything stays two points inside the plot box.
+    let (ax, ay) = (s.cx + (s.outer + 3.0) * s.mid.sin(), s.cy - (s.outer + 3.0) * s.mid.cos());
+    let right = s.mid.sin() >= 0.0;
+    let (ex0, ey0) = (s.cx + (s.outer + 14.0) * s.mid.sin(), s.cy - (s.outer + 14.0) * s.mid.cos());
+    let lx = ex0.clamp(area.x + 2.0, area.right() - 2.0);
+    let ly = ey0.clamp(area.y + 2.0, area.bottom() - 2.0);
+    let ex = if right { lx + 8.0 } else { lx - 8.0 };
+    let ex = ex.clamp(area.x + 2.0, area.right() - 2.0);
+    Some(SliceLabel {
+        x: ex,
+        y: ly,
+        text: s.text,
+        ink: ctx.style.text,
+        align: if right { HAlign::Left } else { HAlign::Right },
+        leader: Some(vec![[ax, ay], [lx, ly], [ex, ly]]),
+    })
+}
+
 pub(super) fn pie(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx, inner: f32, names: bool) {
     let Some(s) = data.series.first() else { return };
     let vals: Vec<f64> = s.values.iter().take(MAX_CATS).map(|v| v.map(f64::abs).unwrap_or(0.0)).collect();
@@ -249,16 +310,21 @@ pub(super) fn pie(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx, inne
                 let t = if names { cat_label(data, j) } else { f.format(s.values.get(j).copied().flatten().unwrap_or(0.0), None) };
                 let mid = a + sweep / 2.0;
                 let rr = if ri > 0.0 { (r + ri) / 2.0 } else { r * 0.65 };
-                let room = sweep * rr;
-                if ctx.tw(&t, LABEL_SIZE) <= room.max(r - ri) && room >= LABEL_SIZE {
-                    labels.push((cx + rr * mid.sin(), cy - rr * mid.cos(), t, on(fill)));
-                }
+                // A pure pie lets a label that does not fit inside step outside; the sunburst
+                // reuses this path with an inner radius and keeps inside-only labels.
+                let l = slice_label(ctx, area, Slice { cx, cy, outer: r, inner: ri, mid, sweep, text: t, fill, inside_rr: rr }, ri == 0.0);
+                labels.extend(l);
             }
         }
         a += sweep;
     }
-    for (x, y, t, c) in labels {
-        ctx.text(x, y, &t, LABEL_SIZE, c, (HAlign::Center, VAlign::Middle));
+    for l in &labels {
+        if let Some(pts) = &l.leader {
+            ctx.line(pts.clone(), ctx.style.text, 1.0);
+        }
+    }
+    for l in &labels {
+        ctx.text(l.x, l.y, &l.text, LABEL_SIZE, l.ink, (l.align, VAlign::Middle));
     }
 }
 
