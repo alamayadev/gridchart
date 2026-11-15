@@ -947,6 +947,38 @@ fn thousands_of_points_are_decimated() {
 }
 
 #[test]
+fn area_prims_stay_inside_the_line_budget() {
+    let n = 3_000;
+    let mk = |name: &str, off: f64, color: Rgba| {
+        let vals: Vec<f64> = (0..n).map(|i| ((i as f64) * 0.02 + off).sin() * 100.0 + 200.0).collect();
+        series(name, &vals, color, ChartKind::Area)
+    };
+    let d = ChartData {
+        category_levels: vec![],
+        palette: vec![],
+        categories: vec![],
+        series: vec![mk("a", 0.0, [9, 9, 9, 255]), mk("b", 1.0, [99, 99, 99, 255]), mk("c", 2.0, [199, 199, 199, 255])],
+    };
+    let mut c = chart(ChartKind::Area);
+    c.data_labels = false;
+    let p = render(&c, &d, 800.0, 400.0, &ApproxMeasure);
+    let ramps = p.iter().filter(|q| matches!(q, Prim::Polygon { fill: Some(Fill::Linear { .. }), .. })).count();
+    let edges = p.iter().filter(|q| matches!(q, Prim::Line { width, dash: false, .. } if *width == 2.25)).count();
+    assert_eq!(ramps, 3, "one gradient fill per series");
+    assert_eq!(edges, 3, "one top-edge line per series");
+    for q in &p {
+        match q {
+            // decimate_area's budget is per edge (each edge ≤ MAX_LINE_PTS * 2 = 4,000 columns),
+            // so a whole polygon carries at most both edges: 8,000 points.
+            Prim::Line { pts, .. } => assert!(pts.len() <= 4_000, "a Line beyond the budget: {}", pts.len()),
+            Prim::Polygon { pts, .. } => assert!(pts.len() <= 8_000, "an area polygon beyond the per-edge budget: {}", pts.len()),
+            _ => {}
+        }
+        assert!(coords(q).iter().all(|v| v.is_finite()), "no non-finite coordinate in {q:?}");
+    }
+}
+
+#[test]
 fn smooth_line_adds_interpolated_points_and_keeps_endpoints() {
     let m = ApproxMeasure;
     let cats = ["a", "b", "c", "d"].map(String::from).to_vec();
@@ -1736,6 +1768,36 @@ fn area_top_edge_breaks_at_gaps_but_the_fill_stays_one_polygon() {
         !p1.iter().any(|q| matches!(q, Prim::Line { width, dash: false, .. } if *width == 2.25)),
         "a single-point top edge is dropped, not stroked"
     );
+}
+
+#[test]
+fn the_area_ramp_rasterises_from_the_series_colour_to_the_card() {
+    let d = sample(ChartKind::Area);
+    let mut c = chart(ChartKind::Area);
+    c.data_labels = false;
+    let p = render(&c, &d, 640.0, 400.0, &ApproxMeasure);
+    // The topmost area layer is painted last, so both probes see its own ramp and nothing above.
+    let (from, to, pts) = p
+        .iter()
+        .filter_map(|q| match q {
+            Prim::Polygon { pts, fill: Some(Fill::Linear { from, to, .. }), .. } => Some((*from, *to, pts)),
+            _ => None,
+        })
+        .next_back()
+        .expect("an area ramp");
+    // Probe down this layer's own tallest column: its top edge point is a category centre, so the
+    // pixel 4 pt below it is this layer's fill at t≈0, and 4 pt above the baseline is t≈1.
+    let half = pts.len() / 2;
+    let top_pt = pts[..half].iter().copied().min_by(|a, b| a[1].total_cmp(&b[1])).expect("a top edge point");
+    let (px, py) = (top_pt[0], top_pt[1]);
+    let base_y = pts[half..].iter().map(|q| q[1]).fold(f32::NEG_INFINITY, f32::max);
+    let (w, h) = (640u32, 400u32);
+    let img = rasterize(&p, w, h, [255, 255, 255, 255]);
+    let top_px = pixel(&img, w, px as u32, (py + 4.0) as u32);
+    let base_px = pixel(&img, w, px as u32, (base_y - 4.0) as u32);
+    let dist = |a: [u8; 4], b: Rgba| a.iter().zip(b).map(|(x, y)| (*x as i32 - y as i32).abs()).sum::<i32>() as f32;
+    assert!(dist(top_px, from) < dist(top_px, to), "near its top edge the layer reads as its series colour: {top_px:?} vs {from:?}/{to:?}");
+    assert!(dist(base_px, to) < dist(base_px, from), "near its base the layer reads toward the card mix: {base_px:?} vs {from:?}/{to:?}");
 }
 
 #[test]
@@ -2645,6 +2707,34 @@ fn the_fixture_round_trips_through_the_rasteriser() {
     let [rounded, square] = fixture::ASYMMETRIC_PROBES;
     assert_eq!(pixel(&px, w, rounded[0], rounded[1]), fixture::BACKGROUND, "the rounded corner is cut out, not painted");
     assert_eq!(pixel(&px, w, square[0], square[1]), fixture::ASYMMETRIC_FILL, "the square corner keeps the fill");
+}
+
+/// The fixture is the cross-backend probe: a later wave cannot silently re-import this plan's ring
+/// tokens into it. Eight prims, the card first, the ring values pinned, five hulls at their centres.
+#[test]
+fn the_parity_fixture_keeps_its_eight_primitives_and_probe_colours() {
+    let scene = parity_fixture();
+    assert_eq!(scene.len(), 8, "card, gradient bar, asymmetric rect, five markers");
+    assert!(
+        matches!(scene.first(), Some(Prim::Rect { x: 0.0, y: 0.0, w: 132.0, h: 80.0, fill: Some(Fill::Solid(c)), radii, .. }) if *c == fixture::CARD && *radii == [0.0; 4]),
+        "the card leads the scene"
+    );
+    assert_eq!(fixture::RING, [255, 255, 255, 255]);
+    assert_eq!(fixture::RING_WEIGHT, 2.0);
+    assert_eq!(fixture::MARKER_CENTRES, [20.0, 46.0, 72.0, 98.0, 124.0]);
+    let centres: Vec<f32> = scene
+        .iter()
+        .filter_map(|q| match q {
+            Prim::Circle { cx, .. } => Some(*cx),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(centres, vec![fixture::MARKER_CENTRES[0]], "the circle hull is first of the five, at its pinned centre");
+    let ringed = scene
+        .iter()
+        .filter(|q| matches!(q, Prim::Circle { stroke: Some((c, w)), .. } | Prim::Polygon { stroke: Some((c, w)), .. } if *c == fixture::RING && *w == fixture::RING_WEIGHT))
+        .count();
+    assert_eq!(ringed, 5, "every hull carries the pinned ring");
 }
 
 /// PRIM-03 / D-03: hostile stops, a non-finite axis and impossible radii degrade to a solid start
