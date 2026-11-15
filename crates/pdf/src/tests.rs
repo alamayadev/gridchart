@@ -744,6 +744,75 @@ fn join_does_not_leak_from_polylines() {
     assert_eq!(p.content.matches(" j\n").count(), 4, "1, 0, 1, 0: only on change");
 }
 
+#[test]
+fn the_shading_dictionary_is_routed_to_the_page_resources() -> Result<(), Box<dyn Error>> {
+    let mut d = PdfDoc::new();
+    let p = d.add_page(100.0, 100.0);
+    assert!(p.axial_shading([0.0, 100.0], [0.0, 0.0], [200, 10, 10], [10, 10, 200], 1.0));
+    let c = page_content(&d);
+    let clip = c.find("W n").ok_or_else(|| io::Error::other("no clipping path"))?;
+    let sh = c.find("/Sh0 sh").ok_or_else(|| io::Error::other("no shading operator"))?;
+    assert!(clip < sh, "the clip comes first: {c}");
+    let pdf = d.finish();
+    for key in ["/ShadingType 2", "/ColorSpace /DeviceRGB", "/Coords [", "/FunctionType 2", "/Domain [0 1]", "/C0 [", "/C1 [", "/Shading << /Sh0"] {
+        assert!(find(&pdf, key.as_bytes()).is_some(), "missing {key}");
+    }
+    check_xref(&pdf)?;
+    Ok(())
+}
+
+#[test]
+fn a_solid_rounded_rect_still_emits_re() {
+    let mut d = PdfDoc::new();
+    let p = d.add_page(100.0, 100.0);
+    p.rounded_rect(0.0, 0.0, 10.0, 10.0, [0.0; 4], Some([0, 0, 0]), None);
+    let c = page_content(&d);
+    assert!(c.contains("re f"), "{c}");
+    assert!(!c.contains(" c"), "four zero radii keep the rectangle: {c}");
+}
+
+#[test]
+fn asymmetric_radii_emit_bezier_arcs() {
+    let mut d = PdfDoc::new();
+    let p = d.add_page(100.0, 100.0);
+    p.rounded_rect(0.0, 0.0, 20.0, 20.0, [4.0, 0.0, 0.0, 0.0], Some([1, 2, 3]), None);
+    let c = page_content(&d);
+    assert!(!c.contains(" re"), "a rounded corner cannot be a rectangle: {c}");
+    assert_eq!(c.matches(" c").count(), 4, "{c}");
+    assert!(c.ends_with("f\n"), "{c}");
+}
+
+#[test]
+fn a_degenerate_axis_emits_no_shading() {
+    let mut d = PdfDoc::new();
+    let p = d.add_page(100.0, 100.0);
+    assert!(!p.axial_shading([0.0, 0.0], [0.0, 0.0], [1, 2, 3], [4, 5, 6], 1.0), "a zero axis is no axis");
+    assert!(!p.axial_shading([1.0, 1.0], [1.0 + 1.0e-5, 1.0], [1, 2, 3], [4, 5, 6], 1.0), "below the span floor");
+    assert!(!p.axial_shading([f32::NAN, 0.0], [0.0, 10.0], [1, 2, 3], [4, 5, 6], 1.0), "a hostile axis");
+    assert!(p.content.is_empty(), "{}", p.content);
+    assert!(p.shadings.is_empty());
+}
+
+#[test]
+fn a_gradient_at_the_content_cap_paints_solid_not_vanishing() {
+    // Room for the shape itself, but not for the shading clip and `sh` (D-03).
+    let mut d = PdfDoc::new();
+    let p = d.add_page(100.0, 100.0);
+    p.content = "x".repeat(MAX_PAGE_CONTENT - 16);
+    assert_eq!(p.content_room(), 16);
+    assert!(!p.axial_shading([0.0, 100.0], [0.0, 0.0], [200, 10, 10], [10, 10, 200], 1.0), "the shading does not fit");
+    assert!(!p.content.contains("sh"), "no shading operator was written");
+    // The caller substitutes `Fill::solid(from)`, so the shape is still on the page.
+    p.rounded_rect(0.0, 0.0, 10.0, 10.0, [0.0; 4], Some([200, 10, 10]), None);
+    assert!(p.content.ends_with("re f\n"), "the shape paints solid");
+    // A page already past the cap reports no room at all rather than wrapping around.
+    let mut d = PdfDoc::new();
+    let p = d.add_page(100.0, 100.0);
+    p.content = "x".repeat(MAX_PAGE_CONTENT + 1);
+    assert_eq!(p.content_room(), 0);
+    assert!(!p.axial_shading([0.0, 0.0], [10.0, 10.0], [0, 0, 0], [1, 1, 1], 1.0));
+}
+
 fn page_content(d: &PdfDoc) -> &str {
     &d.pages[0].content
 }
@@ -820,6 +889,8 @@ fn every_draw_method_survives_hostile_numbers() -> Result<(), Box<dyn Error>> {
             p.text(a, b, a, Font::Helvetica, [0, 0, 0], "x");
             p.text_rotated(Point::new(a, b), 10.0, Font::TimesRoman, [0, 0, 0], "y", b);
             p.image_rgba(Rect::new(a, b, b, a), &px, [2, 2]);
+            p.rounded_rect(a, b, b, a, [a, b, b, a], Some([1, 2, 3]), Some(([4, 5, 6], a)));
+            p.axial_shading([a, b], [b, a], [1, 2, 3], [4, 5, 6], a);
         }
     }
     p.stroke_line_dashed(Point::new(0.0, 0.0), Point::new(1.0, 1.0), 1.0, [0, 0, 0], &[0.0; 100]);

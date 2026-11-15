@@ -329,7 +329,7 @@ pub fn interpret(content: &str) -> Interp {
                 r.paints.push(Paint { op: t.clone(), geometry: path.join(" "), fill: st.fill.clone(), clip: st.clip.clone(), ..Default::default() });
                 path.clear();
             }
-            "f" | "S" | "B" | "Do" => {
+            "f" | "S" | "B" | "Do" | "sh" => {
                 let mut p = Paint { op: t.clone(), geometry: path.join(" "), clip: st.clip.clone(), ..Default::default() };
                 if t == "f" || t == "B" {
                     p.fill = st.fill.clone();
