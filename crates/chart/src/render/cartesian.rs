@@ -455,6 +455,10 @@ pub(super) fn cartesian(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx
                     if poly.len() >= 3 {
                         ctx.out.push(Prim::Polygon { pts: poly, fill: Some(ctx.area_fill(s.color, plot.cx(), y_top, y_bottom)), stroke: None });
                     }
+                    // The top edge strokes at the line families' pinned weight, over the fill, with
+                    // no smoothing: a smoothed edge would lift points off the polygon's own top.
+                    let edge: Vec<Option<[f32; 2]>> = row.iter().enumerate().map(|(j, sp)| sp.map(|(_, t)| [center(j), vpos(t, &sc)])).collect();
+                    draw_runs(ctx, &edge, s.color, 2.25, None);
                 }
                 1 => {
                     let k = slot_of.get(i).copied().unwrap_or(0) as f32;

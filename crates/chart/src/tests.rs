@@ -1665,6 +1665,80 @@ fn area_under_fill_ramps_from_the_series_colour_to_the_card() {
 }
 
 #[test]
+fn area_top_edge_traces_its_gradient_at_the_line_weight() {
+    let d = sample(ChartKind::Area);
+    let mut c = chart(ChartKind::Area);
+    c.data_labels = true;
+    let p = render(&c, &d, 640.0, 400.0, &ApproxMeasure);
+    // The fill polygon's first half is its top edge forward (6 categories: no decimation), so the
+    // stroke must be exactly those points, at the line families' pinned weight, right after it.
+    let polys: Vec<usize> =
+        p.iter().enumerate().filter(|(_, q)| matches!(q, Prim::Polygon { fill: Some(Fill::Linear { .. }), .. })).map(|(k, _)| k).collect();
+    assert_eq!(polys.len(), d.series.len(), "one area polygon per series");
+    let label_idx: Vec<usize> =
+        p.iter().enumerate().filter(|(_, q)| matches!(q, Prim::Text { text, .. } if text.starts_with('$'))).map(|(k, _)| k).collect();
+    // Axis ticks share the "$#,##0" format but paint before the series; the area value labels are
+    // the batch the drain emits after every stroke, so they are the ones past the last top edge.
+    let max_edge = p.iter().rposition(|q| matches!(q, Prim::Line { width, dash: false, .. } if *width == 2.25)).unwrap_or(0);
+    let label_idx: Vec<usize> = label_idx.into_iter().filter(|&k| k > max_edge).collect();
+    assert!(!label_idx.is_empty(), "value labels are on for the ordering half of the contract");
+    let first_label = label_idx.first().copied().unwrap_or(p.len());
+    let mut traced = 0;
+    for &k in &polys {
+        let Prim::Polygon { pts, .. } = &p[k] else { continue };
+        let n = pts.len() / 2;
+        let top: Vec<[f32; 2]> = pts[..n].to_vec();
+        let line = p[k + 1..first_label].iter().find_map(|q| match q {
+            Prim::Line { pts, color, width, dash: false } if *width == 2.25 && pts.to_vec() == top => Some(*color),
+            _ => None,
+        });
+        match line {
+            Some(color) => {
+                assert!(d.series.iter().any(|s| s.color == color), "the edge keeps its series colour");
+                traced += 1;
+            }
+            None => panic!("no 2.25 pt top edge traces polygon at prim {k}"),
+        }
+    }
+    let edges = p.iter().filter(|q| matches!(q, Prim::Line { width, dash: false, .. } if *width == 2.25)).count();
+    assert_eq!(edges, traced, "exactly one top edge per series: {edges}");
+    assert!(label_idx.iter().all(|&t| t > max_edge), "every area label paints after every top edge");
+}
+
+#[test]
+fn area_top_edge_breaks_at_gaps_but_the_fill_stays_one_polygon() {
+    let mut d = sample(ChartKind::Area);
+    d.series.truncate(1);
+    d.series[0].values[2] = None; // a gap in the middle
+    let mut c = chart(ChartKind::Area);
+    c.data_labels = false;
+    let p = render(&c, &d, 640.0, 400.0, &ApproxMeasure);
+    let polys = p.iter().filter(|q| matches!(q, Prim::Polygon { .. })).count();
+    assert_eq!(polys, 1, "the fill stays one polygon across the gap");
+    let edges: Vec<&Prim> = p.iter().filter(|q| matches!(q, Prim::Line { width, dash: false, .. } if *width == 2.25)).collect();
+    assert_eq!(edges.len(), 2, "the stroke breaks at the gap: one run either side, got {}", edges.len());
+    for e in &edges {
+        let Prim::Line { pts, .. } = e else { continue };
+        assert!(pts.len() >= 2, "draw_runs drops single-point runs: {}", pts.len());
+        assert!(pts.iter().flatten().all(|v| v.is_finite()), "no non-finite stroke coordinate");
+    }
+    // A single-category area (the widening path) fills its widened polygon and never strokes: a
+    // one-point run is below draw_runs' two-point floor.
+    let mut d1 = sample(ChartKind::Area);
+    d1.series.truncate(1);
+    d1.series[0].values = vec![Some(25000.0)];
+    d1.categories.truncate(1);
+    let mut c1 = chart(ChartKind::Area);
+    c1.data_labels = false;
+    let p1 = render(&c1, &d1, 640.0, 400.0, &ApproxMeasure);
+    assert!(p1.iter().any(|q| matches!(q, Prim::Polygon { .. })), "the one-category widening still fills");
+    assert!(
+        !p1.iter().any(|q| matches!(q, Prim::Line { width, dash: false, .. } if *width == 2.25)),
+        "a single-point top edge is dropped, not stroked"
+    );
+}
+
+#[test]
 fn two_level_categories_resolve_and_draw() {
     let years = ["2023", "", "", "2024", "", ""];
     let months = ["Oct", "Nov", "Dec", "Jan", "Feb", "Mar"];
