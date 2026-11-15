@@ -15,6 +15,33 @@ fn pdf_of(s: &mut Session, p: Json) -> (Vec<u8>, u64) {
 fn contains(hay: &[u8], needle: &str) -> bool {
     hay.windows(needle.len()).any(|w| w == needle.as_bytes())
 }
+/// The PDF writer's number format, mirrored so an assertion reads the real content stream.
+fn unit(v: u8) -> String {
+    let m = (u32::from(v) * 1000 + 127) / 255;
+    match m {
+        0 => "0".to_string(),
+        1000 => "1".to_string(),
+        _ => {
+            let mut s = format!("0.{m:03}");
+            while s.ends_with('0') {
+                s.pop();
+            }
+            s
+        }
+    }
+}
+fn fill_op(c: [u8; 4]) -> String {
+    format!("{} {} {} rg", unit(c[0]), unit(c[1]), unit(c[2]))
+}
+/// A shading function operand list, as `/C0 [` and `/C1 [` write it.
+fn rgb_op(c: [u8; 3]) -> String {
+    format!("{} {} {}", unit(c[0]), unit(c[1]), unit(c[2]))
+}
+/// Straight-alpha compositing over an opaque surface, mirrored from the PDF draw path.
+fn over(fg: [u8; 4], bg: [u8; 3]) -> [u8; 3] {
+    let a = u16::from(fg[3]);
+    [0, 1, 2].map(|i| ((u16::from(fg[i]) * a + u16::from(bg[i]) * (255 - a)) / 255) as u8)
+}
 
 #[test]
 fn chart_data_table_prints_formatted_values_and_follows_recalculation() {
@@ -973,24 +1000,6 @@ fn style_tokens_reach_the_raster_svg_and_pdf_backends() {
     fn hex(c: [u8; 4]) -> String {
         format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2])
     }
-    /// The PDF writer's number format, mirrored so the assertion reads the real content stream.
-    fn unit(v: u8) -> String {
-        let m = (u32::from(v) * 1000 + 127) / 255;
-        match m {
-            0 => "0".to_string(),
-            1000 => "1".to_string(),
-            _ => {
-                let mut s = format!("0.{m:03}");
-                while s.ends_with('0') {
-                    s.pop();
-                }
-                s
-            }
-        }
-    }
-    fn fill_op(c: [u8; 4]) -> String {
-        format!("{} {} {} rg", unit(c[0]), unit(c[1]), unit(c[2]))
-    }
 
     let mut s = s();
     s.execute("range.setValues", json!({"range": "A1", "values": [["Fruit", "Qty"], ["Apples", 3], ["Pears", 5]]})).unwrap();
@@ -1027,4 +1036,100 @@ fn style_tokens_reach_the_raster_svg_and_pdf_backends() {
     assert_ne!(seen[0].0, seen[1].0, "the light and dark presets paint different cards");
     assert_ne!(seen[0].1, seen[1].1, "and different series ramps");
     assert_ne!(seen[0].2, seen[1].2, "and different PDF content streams");
+}
+/// PRIM-01/PRIM-02: one scene, four backends. The same `Fill::Linear` bars reach the PDF as
+/// native axial shading and the SVG as `userSpaceOnUse` gradient definitions, with the exact
+/// stop colours at both ends (D-01) and no per-backend colour re-derivation.
+#[test]
+fn a_gradient_bar_reaches_the_pdf_shading_and_the_svg_defs() {
+    use gridcraft_chart::Prim;
+    const W: u32 = 480;
+    const H: u32 = 288;
+
+    fn hex(c: [u8; 4]) -> String {
+        format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2])
+    }
+
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "A1", "values": [["Fruit", "Qty"], ["Apples", 3], ["Pears", 5]]})).unwrap();
+    s.execute("insert.chart", json!({"range": "A1:B3", "type": "column"})).unwrap();
+
+    let (card, ramp, svg) = {
+        let d = s.doc().unwrap();
+        let wb = &d.wb;
+        let ch = &wb.active().unwrap().charts[0];
+        let data = gridcraft_chart::resolve(wb, 0, ch);
+        let prims = gridcraft_chart::render(ch, &data, W as f32, H as f32, &super::draw::PdfMeasure);
+        let ramp = prims
+            .iter()
+            .find_map(|p| match p {
+                Prim::Rect { fill: Some(f @ gridcraft_chart::Fill::Linear { .. }), .. } => Some(*f),
+                _ => None,
+            })
+            .expect("a column bar carries a gradient ramp");
+        let card = match prims.first() {
+            Some(Prim::Rect { fill: Some(f), .. }) => f.start(),
+            other => panic!("the first primitive of a chart is the card, got {other:?}"),
+        };
+        let svg = crate::chart_svg::chart_svg(wb, 0, ch, "", crate::chart_svg::MAX_PAGE_SVG_BYTES).unwrap().unwrap();
+        (card, ramp, svg)
+    };
+    let gridcraft_chart::Fill::Linear { from, to, .. } = ramp else {
+        panic!("a bar ramp is a two-stop linear fill");
+    };
+
+    // SVG: a real gradient definition in user space, referenced by the bar, with the exact stops.
+    assert!(svg.contains("<linearGradient "), "the SVG defines a gradient");
+    assert!(svg.contains("gradientUnits=\"userSpaceOnUse\""), "in user space, not bounding-box space");
+    assert!(svg.contains("fill=\"url(#g0)\""), "and a bar fills with it");
+    assert!(svg.contains(&format!("<stop offset=\"0\" stop-color=\"{}\"", hex(from))), "the first stop is the exact from colour, got {svg}");
+    assert!(svg.contains(&format!("<stop offset=\"1\" stop-color=\"{}\"", hex(to))), "the last stop is the exact to colour");
+
+    // PDF: a native axial shading whose function operands are the card-composited stop colours.
+    let (pdf, _) = pdf_of(&mut s, json!({}));
+    let bg = [card[0], card[1], card[2]];
+    assert!(contains(&pdf, "/ShadingType 2"), "the gradient is vector axial shading");
+    assert!(contains(&pdf, "/Sh0 sh"), "a bar paints it");
+    assert!(contains(&pdf, &format!("/C0 [{} ", rgb_op(over(from, bg)))), "the from stop is exact, composited against the card");
+    assert!(contains(&pdf, &format!("/C1 [{} ", rgb_op(over(to, bg)))), "the to stop is exact, composited against the card");
+}
+
+/// STYL-04 / ROADMAP criterion 3: the only backend that composites is PDF, and it composites
+/// translucent ink against the resolved preset card, never a hardcoded white.
+#[test]
+fn translucent_ink_composites_against_the_preset_card_not_white() {
+    use gridcraft_chart::{Fill, Prim};
+    const W: u32 = 480;
+    const H: u32 = 288;
+    let ink = [12u8, 34, 56, 128];
+
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "A1", "values": [["x"], [1]]})).unwrap();
+    s.execute("insert.chart", json!({"range": "A1:A2", "type": "column"})).unwrap();
+    let mut seen = Vec::new();
+    for id in [0u32, 4] {
+        s.execute("chart.set", json!({"style": id})).unwrap();
+        let style = gridcraft_chart::chart_style(id);
+        let prims = vec![
+            Prim::Rect { x: 0.0, y: 0.0, w: W as f32, h: H as f32, fill: Some(Fill::solid(style.card)), stroke: None, radii: [0.0; 4] },
+            Prim::Rect { x: 10.0, y: 10.0, w: 100.0, h: 100.0, fill: Some(Fill::solid(ink)), stroke: None, radii: [0.0; 4] },
+        ];
+        let mut doc = gridcraft_pdf::PdfDoc::new();
+        {
+            let pg = doc.add_page(W as f32, H as f32);
+            super::draw::draw_prims(pg, &prims, super::draw::Xf { ox: 0.0, oy: 0.0, k: 1.0 });
+        }
+        let pdf = doc.finish();
+        let card = [style.card[0], style.card[1], style.card[2]];
+        let want = over(ink, card);
+        assert!(
+            contains(&pdf, &fill_op([want[0], want[1], want[2], 255])),
+            "style {id}: the translucent ink composites against the preset card {card:?}",
+        );
+        if card != [255, 255, 255] {
+            assert_ne!(want, over(ink, [255, 255, 255]), "style {id}: the card is not white, so the ink must not composite against white");
+        }
+        seen.push(want);
+    }
+    assert_ne!(seen[0], seen[1], "the light and dark presets composite the same ink differently");
 }
