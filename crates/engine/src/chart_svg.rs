@@ -149,6 +149,23 @@ fn paint(out: &mut String, fill: Option<Fill>, grad: Option<usize>, stroke: Opti
 }
 
 /// The distinct ramps used by the scene, in first-use order, up to [`MAX_SVG_GRADIENTS`].
+/// Shortest ramp axis that is still a direction. Below it the shape paints its solid "from" stop,
+/// so every backend degrades a degenerate ramp the same way; the chart crate flattens these centrally
+/// in sanitize.rs and this is the backstop for direct callers (the rasteriser's Ramp::of uses the
+/// same floor). An SVG userSpaceOnUse gradient with a zero-length axis would otherwise paint its last
+/// stop and leave the four backends disagreeing.
+const MIN_GRADIENT_SPAN: f32 = 1.0e-4;
+
+/// Whether a ramp has an axis at all (finite, and longer than MIN_GRADIENT_SPAN).
+fn directional(fill: &Fill) -> bool {
+    let Fill::Linear { start, end, .. } = *fill else {
+        return false;
+    };
+    let d = [end[0] - start[0], end[1] - start[1]];
+    let len_sq = d[0] * d[0] + d[1] * d[1];
+    len_sq.is_finite() && len_sq > MIN_GRADIENT_SPAN
+}
+
 fn gradients(prims: &[Prim]) -> Vec<Fill> {
     let mut out: Vec<Fill> = Vec::new();
     for p in prims {
@@ -158,7 +175,7 @@ fn gradients(prims: &[Prim]) -> Vec<Fill> {
         if out.len() >= MAX_SVG_GRADIENTS {
             break;
         }
-        if !out.contains(f) {
+        if directional(f) && !out.contains(f) {
             out.push(*f);
         }
     }
@@ -387,5 +404,40 @@ mod tests {
     fn a_full_circle_wedge_keeps_a_drawable_arc() {
         let d = wedge_path(0.0, 0.0, 10.0, 0.0, 0.0, std::f32::consts::TAU);
         assert!(d.contains("A10 10 0 1 1 ") && d.ends_with("L0 0 Z"), "{d}");
+    }
+
+    /// D-03: degenerate rects are still drawable shapes. All-non-finite radii clamp to zero and
+    /// take the compact square element; mixed hostile radii still clamp per corner, so the result is
+    /// a closed path of real arcs. A non-finite extent or stroke width is written as 0 by num()
+    /// instead of poisoning the markup, and the byte ceiling is unchanged.
+    #[test]
+    fn a_degenerate_primitive_is_still_emitted_as_a_shape() {
+        let fill = Some(Fill::solid([90, 90, 200, 255]));
+        let ring = Some(([255, 255, 255, 255], f32::NAN));
+        let prims = [
+            Prim::Rect {
+                x: f32::NAN,
+                y: 0.0,
+                w: f32::INFINITY,
+                h: 24.0,
+                fill,
+                stroke: ring,
+                radii: [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, f32::NAN],
+            },
+            Prim::Rect { x: 0.0, y: 0.0, w: 24.0, h: 24.0, fill, stroke: ring, radii: [f32::NAN, -1.0, f32::INFINITY, 1e30] },
+        ];
+        let svg = prims_svg(&prims, 64.0, 64.0, "");
+        assert!(svg.contains("<rect "), "the all-non-finite radii take the square element: {svg}");
+        assert!(!svg.contains(" rx="), "and its corners are square: {svg}");
+        assert_eq!(svg.matches(" A").count(), 4, "the mixed radii still make four real arcs: {svg}");
+        assert!(svg.contains("fill=\"#5a5ac8\""), "{svg}");
+        assert_eq!(svg.matches("stroke=\"#ffffff\"").count(), 2, "both keep the ring: {svg}");
+        assert!(svg.contains("stroke-width=\"0\""), "a non-finite width is 0, not NaN: {svg}");
+        assert!(!svg.contains("NaN") && !svg.contains("inf"), "{svg}");
+        // The byte ceiling is the same one for friendly and hostile scenes.
+        let full = prims_svg(&prims, 64.0, 64.0, "");
+        assert!(full.len() < MAX_PAGE_SVG_BYTES, "inside MAX_PAGE_SVG_BYTES");
+        assert_eq!(prims_svg_within(&prims, 64.0, 64.0, "", full.len()), Some(full.clone()));
+        assert_eq!(prims_svg_within(&prims, 64.0, 64.0, "", full.len() - 1), None);
     }
 }

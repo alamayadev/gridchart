@@ -480,4 +480,55 @@ mod tests {
         assert_eq!(img.get(at(0, 0)..at(0, 0) + 4), Some(&[0u8, 0, 0, 0][..]), "the outer diagonal of the arc is clear");
         assert_eq!(img.get(at(20, 20)..at(20, 20) + 4), Some(&[255u8, 0, 0, 255][..]), "the centre is filled");
     }
+
+    /// D-03: hostile input degrades to a deterministic flat fill, never to a hole and never to a
+    /// panic. An axis shorter than MIN_GRADIENT_SPAN is painted in the from stop, and a non-finite
+    /// radius is a square corner.
+    #[test]
+    fn a_zero_length_gradient_and_a_nan_radius_still_paint() {
+        // The axis is 0 long; MIN_GRADIENT_SPAN is the floor below which a ramp is not a direction.
+        let axis = (4.0f32 - 4.0).abs();
+        assert!(axis < MIN_GRADIENT_SPAN, "the axis {axis} is under the floor {MIN_GRADIENT_SPAN}");
+        let rect = Prim::Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 20.0,
+            h: 20.0,
+            fill: Some(Fill::Linear { from: [200, 10, 10, 255], to: [10, 10, 200, 255], start: [4.0, 4.0], end: [4.0, 4.0] }),
+            stroke: None,
+            radii: [f32::NAN; 4],
+        };
+        let img = rasterize(&[rect], 20, 20, [0, 0, 0, 0]);
+        assert_eq!(img.len(), 20 * 20 * 4, "a sized buffer, not an empty one");
+        assert!(img.len() as u64 <= MAX_PIXELS * 4, "inside MAX_PIXELS");
+        // MAX_SCAN_WORK is untouched by a two-stop ramp, so it is not what degraded this scene.
+        let at = |x: usize, y: usize| (y * 20 + x) * 4;
+        assert_eq!(img.get(at(10, 10)..at(10, 10) + 4), Some(&[200u8, 10, 10, 255][..]), "the body is the from stop");
+        assert_eq!(img.get(at(0, 0)..at(0, 0) + 4), Some(&[200u8, 10, 10, 255][..]), "a NaN radius is a square corner, not a cut-out");
+    }
+
+    #[test]
+    fn a_negative_radius_is_clamped_to_square() {
+        let rect = Prim::Rect { x: 0.0, y: 0.0, w: 20.0, h: 20.0, fill: Some(Fill::solid([255, 0, 0, 255])), stroke: None, radii: [-4.0; 4] };
+        let img = rasterize(&[rect], 20, 20, [0, 0, 0, 0]);
+        let at = |x: usize, y: usize| (y * 20 + x) * 4;
+        assert_eq!(img.get(at(0, 0)..at(0, 0) + 4), Some(&[255u8, 0, 0, 255][..]), "the north-west corner is painted");
+        assert_eq!(img.get(at(19, 19)..at(19, 19) + 4), Some(&[255u8, 0, 0, 255][..]), "and so is the south-east one");
+    }
+
+    /// A rect narrower than a pixel: the square fast path, one covered pixel, and the corner radii
+    /// clamp below MIN_ROUNDED_BAR_PX so no arc is tessellated for it.
+    #[test]
+    fn a_sub_pixel_rect_takes_the_square_fast_path() {
+        // MIN_ROUNDED_BAR_PX (render.rs:57) is private to the render module, so the threshold is
+        // named here rather than imported: a bar narrower than it never rounds its corners.
+        const MIN_ROUNDED_BAR_PX: f32 = 3.0;
+        let w = 0.4f32;
+        assert!(w < MIN_ROUNDED_BAR_PX, "{w} is under the rounding threshold");
+        let rect = Prim::Rect { x: 0.0, y: 0.0, w, h: 1.0, fill: Some(Fill::solid([10, 200, 40, 255])), stroke: None, radii: [0.5; 4] };
+        let img = rasterize(&[rect], 4, 1, [0, 0, 0, 0]);
+        let covered: Vec<usize> = (0..4).filter(|&x| img.get(x * 4 + 3).copied().unwrap_or(0) > 0).collect();
+        assert_eq!(covered, vec![0], "exactly one pixel takes coverage");
+        assert_eq!(img.get(0..3), Some(&[10u8, 200, 40][..]), "and it carries the fill colour");
+    }
 }

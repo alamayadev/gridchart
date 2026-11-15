@@ -813,6 +813,30 @@ fn a_gradient_at_the_content_cap_paints_solid_not_vanishing() {
     assert!(!p.axial_shading([0.0, 0.0], [10.0, 10.0], [0, 0, 0], [1, 1, 1], 1.0));
 }
 
+/// D-03: a ramp meets exactly two ceilings in the PDF writer - the axis floor and the shading count -
+/// and reaching either degrades to the solid from stop the caller substitutes, never to a vanishing
+/// shape. MAX_PAGE_CONTENT, MIN_GRADIENT_SPAN and MAX_PAGE_SHADINGS keep their values.
+#[test]
+fn a_ramp_at_either_ceiling_paints_its_solid_from_stop() {
+    let mut d = PdfDoc::new();
+    let p = d.add_page(100.0, 100.0);
+    // An axis shorter than MIN_GRADIENT_SPAN is not a direction.
+    assert!(!p.axial_shading([1.0, 1.0], [1.0 + MIN_GRADIENT_SPAN / 2.0, 1.0], [200, 10, 10], [10, 10, 200], 1.0));
+    assert!(p.content.is_empty(), "{}", p.content);
+    // At the shading ceiling the same substitution happens.
+    p.shadings = std::iter::repeat_with(|| ShadingData { start: [0.0, 0.0], end: [1.0, 0.0], from: [0, 0, 0], to: [1, 1, 1], alpha: 1.0 })
+        .take(MAX_PAGE_SHADINGS)
+        .collect();
+    assert_eq!(p.shadings.len(), MAX_PAGE_SHADINGS, "the ceiling is the ceiling");
+    assert!(!p.axial_shading([0.0, 100.0], [0.0, 0.0], [200, 10, 10], [10, 10, 200], 1.0), "no room for another shading");
+    assert!(!p.content.contains("sh"), "no shading operator was written: {}", p.content);
+    assert_eq!(p.content_room(), MAX_PAGE_CONTENT, "the content ceiling is untouched by the shading one");
+    // The caller substitutes the solid from stop, so the shape is still on the page.
+    p.rounded_rect(0.0, 0.0, 10.0, 10.0, [0.0; 4], Some([200, 10, 10]), None);
+    assert!(p.content.contains(" rg"), "the from stop is set as a fill colour: {}", p.content);
+    assert!(p.content.ends_with("re f\n"), "the shape paints solid: {}", p.content);
+}
+
 fn page_content(d: &PdfDoc) -> &str {
     &d.pages[0].content
 }

@@ -1060,6 +1060,42 @@ fn style_tokens_reach_the_raster_svg_and_pdf_backends() {
     assert_ne!(seen[0].0, seen[1].0, "the light and dark presets paint different cards");
     assert_ne!(seen[0].1, seen[1].1, "and different series ramps");
     assert_ne!(seen[0].2, seen[1].2, "and different PDF content streams");
+
+    // D-03: the same hostile scene, backend by backend. A zero-length ramp and all-NaN radii paint
+    // one solid, square-cornered shape - never a hole, never a dangling gradient reference, never a
+    // panic. Each backend keeps its own ceiling at the value it had: MAX_PAGE_SVG_BYTES in the SVG
+    // emitter, MAX_PAGE_CONTENT and MAX_PAGE_SHADINGS in the PDF writer, MAX_SCAN_WORK and
+    // MAX_PIXELS in the rasteriser.
+    use gridcraft_chart::Prim;
+    let hostile = vec![
+        Prim::Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 20.0,
+            h: 20.0,
+            fill: Some(gridcraft_chart::Fill::Linear { from: [200, 10, 10, 255], to: [10, 10, 200, 255], start: [4.0, 4.0], end: [4.0, 4.0] }),
+            stroke: None,
+            radii: [f32::NAN; 4],
+        },
+        Prim::Rect { x: 0.5, y: 30.0, w: 0.4, h: 1.0, fill: Some(gridcraft_chart::Fill::solid([10, 200, 40, 255])), stroke: None, radii: [-4.0; 4] },
+    ];
+    let pixels = gridcraft_chart::rasterize(&hostile, 64, 64, [0, 0, 0, 0]);
+    assert_eq!(pixels.len(), 64 * 64 * 4, "the rasteriser returns a sized buffer for a hostile scene");
+    let probe = (10 * 64 + 10) * 4;
+    assert_eq!(&pixels[probe..probe + 4], &[200, 10, 10, 255], "a zero-length ramp paints its from stop");
+    let svg = crate::chart_svg::prims_svg(&hostile, 64.0, 64.0, "");
+    assert!(svg.contains("<rect ") && !svg.contains("rx="), "the hostile rect is a square element, not a hole: {svg}");
+    assert!(!svg.contains("url(#"), "a degenerate ramp never references a dangling gradient: {svg}");
+    let mut doc = gridcraft_pdf::PdfDoc::new();
+    {
+        let pg = doc.add_page(64.0, 64.0);
+        super::draw::draw_prims(pg, &hostile, super::draw::Xf { ox: 0.0, oy: 0.0, k: 1.0 });
+    }
+    let bytes = doc.finish();
+    assert!(contains(&bytes, &fill_op([200, 10, 10, 255])), "the PDF still writes the from stop as a fill");
+    assert!(contains(&bytes, "re f"), "and the shape is still painted, not dropped");
+    let (chart_pdf, _) = pdf_of(&mut s, json!({}));
+    assert!(contains(&chart_pdf, "re f"), "and a real chart's scene still paints");
 }
 /// PRIM-01/PRIM-02: one scene, four backends. The same `Fill::Linear` bars reach the PDF as
 /// native axial shading and the SVG as `userSpaceOnUse` gradient definitions, with the exact
