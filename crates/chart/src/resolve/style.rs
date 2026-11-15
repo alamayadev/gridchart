@@ -60,9 +60,21 @@ pub struct ChartStyle {
     pub type_scale: TypeScale,
 }
 
+/// Every preset authors its full token set in one call: the eleven fields are the style's whole
+/// surface and ink contract, so splitting the parameter list would only hide parts of it.
+#[allow(clippy::too_many_arguments)]
 const fn style(
-    card: Rgba, card_border: Rgba, text: Rgba, grid: (Rgba, f32), axis: Rgba, stock: Rgba, dark: bool,
-    baseline: (Rgba, f32), marker_ring_w: f32, slice_seam_w: f32, type_scale: TypeScale,
+    card: Rgba,
+    card_border: Rgba,
+    text: Rgba,
+    grid: (Rgba, f32),
+    axis: Rgba,
+    stock: Rgba,
+    dark: bool,
+    baseline: (Rgba, f32),
+    marker_ring_w: f32,
+    slice_seam_w: f32,
+    type_scale: TypeScale,
 ) -> ChartStyle {
     ChartStyle {
         card,
@@ -87,7 +99,7 @@ impl Default for ChartStyle {
 }
 
 const DEFAULT: ChartStyle = style(
-    [0xFF, 0xFF, 0xFF, 0xFF],
+    crate::render::WHITE,
     [0xD9, 0xD9, 0xD9, 0xFF],
     [0x59, 0x59, 0x59, 0xFF],
     ([0xD9, 0xD9, 0xD9, 0xFF], 0.75),
@@ -95,7 +107,7 @@ const DEFAULT: ChartStyle = style(
     [0x40, 0x40, 0x40, 0xFF],
     false,
     ([0xA6, 0xA6, 0xA6, 0xFF], 1.25),
-    0.75,
+    crate::render::MARKER_RING_WEIGHT,
     1.5,
     TypeScale::DEFAULT,
 );

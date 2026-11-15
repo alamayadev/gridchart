@@ -16,8 +16,7 @@ pub(crate) enum MarkerShape {
 }
 
 /// The hull cycle production markers draw, derived from the series index, never stored.
-pub(crate) const MARKER_CYCLE: [MarkerShape; 4] =
-    [MarkerShape::Circle, MarkerShape::Square, MarkerShape::Diamond, MarkerShape::UpTriangle];
+pub(crate) const MARKER_CYCLE: [MarkerShape; 4] = [MarkerShape::Circle, MarkerShape::Square, MarkerShape::Diamond, MarkerShape::UpTriangle];
 
 /// The hull series `index` draws; the modulo, not a slice index, keeps a hostile index safe.
 pub(crate) fn marker_shape(index: usize) -> MarkerShape {

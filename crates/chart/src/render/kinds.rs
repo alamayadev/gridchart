@@ -646,4 +646,3 @@ mod quartile_tests {
         }
     }
 }
-

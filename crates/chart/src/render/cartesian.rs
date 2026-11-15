@@ -1,11 +1,11 @@
 use super::frame::{Bx, CatAxis, ValAxis, frame, on, value_range};
 use super::legend::{cat_label, plot_kind};
 use super::lines::{decimate_area, draw_markers, draw_runs};
-use super::shape::{MarkerShape, marker_shape};
+use super::shape::marker_shape;
 use super::trend::{draw_trend_labels, draw_trendlines, max_backward, max_forward, max_forward_slots, supports_trendline};
 use super::{
-    BAR_RADIUS_FRACTION, Chart, ChartData, ChartKind, Ctx, Fill, Fmt, HAlign, LABEL_SIZE, MAX_CATS, MAX_LABELS, MAX_LINE_PTS, MAX_MARKERS, MIN_BAR_PX,
-    MIN_ROUNDED_BAR_PX, Prim, Rgba, Scale, SeriesData, VAlign, clean, nice_scale,
+    BAR_RADIUS_FRACTION, Chart, ChartData, ChartKind, Ctx, Fill, Fmt, HAlign, LABEL_SIZE, MAX_CATS, MAX_LABELS, MAX_LINE_PTS, MAX_MARKERS,
+    MIN_BAR_PX, MIN_ROUNDED_BAR_PX, Prim, Rgba, Scale, SeriesData, VAlign, clean, nice_scale,
 };
 
 // ---------------------------------------------------------------- cartesian (column/bar/line/area/combo)
@@ -136,11 +136,7 @@ fn bar_radii_at(rounds: bool, bw: f32, len: f32, horizontal: bool, tip: bool, me
 /// (`None` when the category has no stacked column on that side, where every bar carries its own
 /// tip): only the outward terminal segment of each sign rounds, so a mixed-sign stack keeps its
 /// internal joins square.
-fn stack_terminals(
-    spans: &[Vec<Option<(f64, f64)>>],
-    fams: &[Fam],
-    ncat: usize,
-) -> Vec<(Option<usize>, Option<usize>)> {
+fn stack_terminals(spans: &[Vec<Option<(f64, f64)>>], fams: &[Fam], ncat: usize) -> Vec<(Option<usize>, Option<usize>)> {
     let mut terminals = vec![(None, None); ncat];
     for (i, row) in spans.iter().enumerate() {
         if !fams.get(i).is_some_and(|f| matches!(f, Fam::ColStack | Fam::Col100)) {
@@ -453,9 +449,11 @@ pub(super) fn cartesian(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx
                             base = vec![[b[0] - cw * 0.3, b[1]], [b[0] + cw * 0.3, b[1]]];
                         }
                     }
+                    let y_top = top.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min);
+                    let y_bottom = base.iter().map(|p| p[1]).fold(f32::NEG_INFINITY, f32::max);
                     let poly = decimate_area(top, base, MAX_LINE_PTS * 2);
                     if poly.len() >= 3 {
-                        ctx.out.push(Prim::Polygon { pts: poly, fill: Some(Fill::solid(s.color)), stroke: None });
+                        ctx.out.push(Prim::Polygon { pts: poly, fill: Some(ctx.area_fill(s.color, plot.cx(), y_top, y_bottom)), stroke: None });
                     }
                 }
                 1 => {

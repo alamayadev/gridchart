@@ -106,4 +106,3 @@ pub fn parity_fixture() -> Vec<Prim> {
     out.extend(shapes.into_iter().zip(MARKER_CENTRES).map(|(s, x)| marker(s, x)));
     out
 }
-

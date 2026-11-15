@@ -1,4 +1,4 @@
-﻿use super::{Chart, ChartData, Ctx, DARK_TEXT, Fmt, HAlign, PI, Prim, Rgba, Scale, VAlign, WHITE};
+use super::{Chart, ChartData, Ctx, DARK_TEXT, Fmt, HAlign, PI, Prim, Rgba, Scale, VAlign, WHITE};
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Bx {
@@ -44,14 +44,7 @@ pub(super) fn axis_titles(ctx: &mut Ctx, chart: &Chart, mut area: Bx) -> Bx {
     let lh = ctx.style.type_scale.axis_title * 1.4 + 2.0;
     if let Some(t) = chart.x_title.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
         let t = ctx.fit(t, ctx.style.type_scale.axis_title, area.w);
-        ctx.text(
-            area.cx(),
-            area.bottom(),
-            &t,
-            ctx.style.type_scale.axis_title,
-            ctx.style.text,
-            (HAlign::Center, VAlign::Bottom),
-        );
+        ctx.text(area.cx(), area.bottom(), &t, ctx.style.type_scale.axis_title, ctx.style.text, (HAlign::Center, VAlign::Bottom));
         area.h -= lh;
     }
     if let Some(t) = chart.y_title.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
@@ -259,4 +252,3 @@ pub(super) fn value_range(it: impl Iterator<Item = f64>) -> Option<(f64, f64)> {
         Some((a, b)) => Some((a.min(v), b.max(v))),
     })
 }
-

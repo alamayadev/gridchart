@@ -61,6 +61,9 @@ const GRADIENT_SHEEN_ALPHA: f32 = 0.75;
 /// A ramp shorter than this on both axes is not resolvable by any of the four backends (sub-pixel
 /// at every zoom a chart is drawn at): it degrades to its start colour.
 pub(crate) const MIN_GRADIENT_SPAN: f32 = 1e-4;
+/// How far the area under-fill travels from the series colour toward the card by the base of its
+/// band.
+pub(crate) const AREA_UNDERFILL_FADE: f32 = 0.22;
 /// Most wedges a doughnut draws for the whole chart. The per-series and per-category limits do not
 /// bound their product: 255 series of 20,000 categories would be millions of wedges. Every drawable
 /// ring shares this budget, so the innermost ring keeps its largest slices and the outer rings are
@@ -145,6 +148,17 @@ impl Ctx<'_> {
     fn gradient_axis_h(&self, c: Rgba, y: f32, x0: f32, x1: f32) -> Fill {
         Fill::Linear { from: c, to: sheen(c), start: [x0, y], end: [x1, y] }
     }
+    /// One vertical area under-fill per layer: the series colour at the band's top fading
+    /// [`AREA_UNDERFILL_FADE`] toward the card at the band's own base, both at `x`. A band that is
+    /// not finite, not upright or at/below [`MIN_GRADIENT_SPAN`] tall degrades to the series colour.
+    pub(crate) fn area_fill(&self, c: Rgba, x: f32, y_top: f32, y_bottom: f32) -> Fill {
+        let band = y_bottom - y_top;
+        if x.is_finite() && y_top.is_finite() && y_bottom.is_finite() && band.is_finite() && band > MIN_GRADIENT_SPAN {
+            Fill::Linear { from: c, to: mix(c, self.style.card, AREA_UNDERFILL_FADE), start: [x, y_top], end: [x, y_bottom] }
+        } else {
+            Fill::solid(c)
+        }
+    }
     fn line(&mut self, pts: Vec<[f32; 2]>, color: Rgba, width: f32) {
         if pts.len() >= 2 {
             self.out.push(Prim::Line { pts, color, width, dash: false });
@@ -161,6 +175,15 @@ impl Ctx<'_> {
 /// The faded far stop of a sheen: same hue, alpha at GRADIENT_SHEEN_ALPHA.
 fn sheen(c: Rgba) -> Rgba {
     [c[0], c[1], c[2], (c[3] as f32 * GRADIENT_SHEEN_ALPHA).round().clamp(0.0, 255.0) as u8]
+}
+
+/// Straight 8-bit interpolation from `a` toward `b` by `t`: exact at both ends, every channel
+/// (alpha included) lerped in f32 and rounded back. A hostile NaN reads as 0.0; an infinite `t`
+/// clamps to its end (`-∞` to `a`, `+∞` to `b`), as does any `t` outside 0..=1.
+pub(crate) fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
+    let t = if t.is_nan() { 0.0 } else { t.clamp(0.0, 1.0) };
+    let ch = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round().clamp(0.0, 255.0) as u8;
+    [ch(a[0], b[0]), ch(a[1], b[1]), ch(a[2], b[2]), ch(a[3], b[3])]
 }
 
 fn sanitize_vals(v: &[Option<f64>]) -> Vec<Option<f64>> {
@@ -373,3 +396,49 @@ pub(crate) fn finalize(prims: Vec<Prim>, w: f32, h: f32) -> Vec<Prim> {
         .collect()
 }
 
+#[cfg(test)]
+mod underfill_tests {
+    use super::*;
+
+    #[test]
+    fn mix_hits_both_ends_and_interpolates_every_channel() {
+        let c = [0x10, 0x40, 0x80, 0xFF];
+        let card = [0xF0, 0xC0, 0x7F, 0x00];
+        assert_eq!(mix(c, card, 0.0), c, "t=0 is exactly the series colour");
+        assert_eq!(mix(c, card, 1.0), card, "t=1 is exactly the card");
+        // Straight 8-bit interpolation, no gamma round trip: 0x00..0xFF midpoints land on 0x80.
+        let mid = mix([0x00; 4], [0xFF; 4], 0.5);
+        assert_eq!(mid, [0x80, 0x80, 0x80, 0x80], "every channel interpolates, alpha included");
+        // A t outside 0..=1 clamps rather than wrapping, and a hostile non-finite t reads as 0.0.
+        assert_eq!(mix(c, card, -0.5), c);
+        assert_eq!(mix(c, card, 2.0), card);
+        assert_eq!(mix(c, card, f32::NAN), c);
+        assert_eq!(mix(c, card, f32::INFINITY), card);
+    }
+
+    #[test]
+    fn area_fill_spans_the_layer_band_vertically_and_degrades_below_the_minimum_span() {
+        let ctx = Ctx { out: Vec::new(), m: &crate::ApproxMeasure, style: crate::resolve::style::chart_style(0) };
+        let c = [200, 80, 40, 255];
+        match ctx.area_fill(c, 100.0, 40.0, 200.0) {
+            Fill::Linear { from, to, start, end } => {
+                assert_eq!(from, c);
+                assert_eq!(to, mix(c, ctx.style.card, AREA_UNDERFILL_FADE));
+                assert_eq!(start, [100.0, 40.0], "the ramp starts at the band's top");
+                assert_eq!(end, [100.0, 200.0], "the ramp ends at the band's own base");
+                assert_eq!(start[0], end[0], "the ramp is genuinely vertical in every backend");
+            }
+            other => panic!("a healthy band ramps, got {other:?}"),
+        }
+        let solid = |f: Fill| matches!(f, Fill::Solid(s) if s == c);
+        assert!(solid(ctx.area_fill(c, 100.0, f32::NAN, 200.0)), "a non-finite bound degrades to the series colour");
+        assert!(solid(ctx.area_fill(c, f32::INFINITY, 40.0, 200.0)), "a non-finite axis degrades to the series colour");
+        assert!(solid(ctx.area_fill(c, 100.0, 200.0, 200.0)), "an empty band degrades to the series colour");
+        assert!(solid(ctx.area_fill(c, 100.0, 200.0, 40.0)), "an inverted band degrades to the series colour");
+        assert!(solid(ctx.area_fill(c, 100.0, 40.0, 40.0 + MIN_GRADIENT_SPAN)), "a band at the minimum span degrades to the series colour");
+        assert!(
+            matches!(ctx.area_fill(c, 100.0, 40.0, 40.0 + MIN_GRADIENT_SPAN * 2.0), Fill::Linear { .. }),
+            "a band just past the minimum span still ramps"
+        );
+    }
+}

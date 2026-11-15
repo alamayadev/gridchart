@@ -92,6 +92,9 @@ fn sample(kind: ChartKind) -> ChartData {
     }
 }
 
+/// A rect prim flattened for grouping: x, y, w, h, per-corner radii.
+type BarRect = (f32, f32, f32, f32, [f32; 4]);
+
 fn coords(p: &Prim) -> Vec<f32> {
     match p {
         Prim::Rect { x, y, w, h, .. } => vec![*x, *y, x + w, y + h],
@@ -456,7 +459,15 @@ fn doughnut_legend_names_categories_and_matches_every_ring() {
         rings.push(*r_outer);
         let rel = ((a0 + a1) / 2.0 - start).rem_euclid(std::f32::consts::TAU);
         let cat = ((rel / (std::f32::consts::TAU / 4.0)) as usize).min(3);
-        assert_eq!(fill.and_then(|f| match f { Fill::Solid(c) => Some(c), Fill::Linear { .. } => None }), Some(entries[cat].1), "ring wedge at {a0}..{a1} does not match legend entry {}", entries[cat].0);
+        assert_eq!(
+            fill.and_then(|f| match f {
+                Fill::Solid(c) => Some(c),
+                Fill::Linear { .. } => None,
+            }),
+            Some(entries[cat].1),
+            "ring wedge at {a0}..{a1} does not match legend entry {}",
+            entries[cat].0
+        );
     }
     rings.sort_by(f32::total_cmp);
     rings.dedup();
@@ -1458,7 +1469,10 @@ fn pie_points_follow_the_chart_preset() {
     let fills: Vec<Rgba> = render(&c, &d, 480.0, 288.0, &ApproxMeasure)
         .iter()
         .filter_map(|p| match p {
-            Prim::Wedge { fill, .. } => fill.and_then(|f| match f { Fill::Solid(c) => Some(c), Fill::Linear { .. } => None }),
+            Prim::Wedge { fill, .. } => fill.and_then(|f| match f {
+                Fill::Solid(c) => Some(c),
+                Fill::Linear { .. } => None,
+            }),
             _ => None,
         })
         .collect();
@@ -1578,6 +1592,76 @@ fn hundred_percent_stacked_areas_fill_each_category_to_its_total() {
     }
     // A category whose total is zero stays on the baseline.
     assert!(frac(top(south, 2)).abs() < 1e-3, "Q3: South reaches {}", frac(top(south, 2)));
+}
+
+#[test]
+fn area_under_fill_ramps_from_the_series_colour_to_the_card() {
+    let style = crate::resolve::style::chart_style(0);
+    for kind in [ChartKind::Area, ChartKind::AreaStacked] {
+        let d = sample(kind);
+        let c = chart(kind);
+        let p = render(&c, &d, 640.0, 400.0, &ApproxMeasure);
+        // One ramped polygon per series, in series order.
+        let fills: Vec<&Prim> = p.iter().filter(|p| matches!(p, Prim::Polygon { fill: Some(Fill::Linear { .. }), .. })).collect();
+        assert_eq!(fills.len(), d.series.len(), "{kind:?}: one ramped polygon per series");
+        for (i, prim) in fills.iter().enumerate() {
+            let s = &d.series[i];
+            let Prim::Polygon { pts, fill: Some(Fill::Linear { from, to, start, end }), .. } = prim else {
+                panic!("{kind:?}: layer {i} is not a ramp");
+            };
+            assert_eq!(*from, s.color, "{kind:?}: layer {i} starts at the series colour");
+            assert_eq!(*to, crate::render::mix(s.color, style.card, crate::render::AREA_UNDERFILL_FADE), "{kind:?}: layer {i} fades toward the card");
+            assert_eq!(start[0], end[0], "{kind:?}: layer {i} ramp is vertical");
+            let (x_min, x_max) = (pts.iter().map(|q| q[0]).fold(f32::INFINITY, f32::min), pts.iter().map(|q| q[0]).fold(f32::NEG_INFINITY, f32::max));
+            assert!(start[0] > x_min && start[0] < x_max, "{kind:?}: layer {i} ramp sits inside its own x extent");
+            assert!(start[1] < end[1], "{kind:?}: layer {i} ramps top to bottom");
+            assert_eq!(from[3], 255, "{kind:?}: layer {i} keeps full alpha at the top");
+            assert_eq!(to[3], 255, "{kind:?}: layer {i} keeps full alpha at the base");
+            // The ramp spans exactly this layer's own band: the top edge's highest point and the
+            // base edge's lowest point. The polygon is its top edge forward then its base edge
+            // reversed (6 categories: no decimation), so the halves split the point list.
+            let half = pts.len() / 2;
+            let top_min = pts.iter().take(half).map(|q| q[1]).fold(f32::INFINITY, f32::min);
+            let base_max = pts.iter().skip(half).map(|q| q[1]).fold(f32::NEG_INFINITY, f32::max);
+            assert!((start[1] - top_min).abs() < 1e-3, "{kind:?}: layer {i} starts at its own top edge: {} {}", start[1], top_min);
+            assert!((end[1] - base_max).abs() < 1e-3, "{kind:?}: layer {i} ends at its own base edge: {} {}", end[1], base_max);
+        }
+    }
+    // With strictly positive values every stacked layer sits above the previous one, so each
+    // layer's base (and its ramp's end) moves strictly up the plot, layer by layer.
+    let d = ChartData {
+        category_levels: vec![],
+        palette: vec![],
+        categories: ["Q1", "Q2", "Q3", "Q4"].iter().map(|s| s.to_string()).collect(),
+        series: vec![
+            series("A", &[10.0, 20.0, 30.0, 40.0], [20, 96, 130, 255], ChartKind::AreaStacked),
+            series("B", &[30.0, 10.0, 20.0, 5.0], [200, 80, 40, 255], ChartKind::AreaStacked),
+            series("C", &[5.0, 15.0, 10.0, 20.0], [25, 107, 36, 255], ChartKind::AreaStacked),
+        ],
+    };
+    let c = chart(ChartKind::AreaStacked);
+    let p = render(&c, &d, 640.0, 400.0, &ApproxMeasure);
+    let ends: Vec<f32> = p
+        .iter()
+        .filter_map(|p| match p {
+            Prim::Polygon { fill: Some(Fill::Linear { end, .. }), .. } => Some(end[1]),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ends.len(), 3);
+    assert!(ends[0] > ends[1] && ends[1] > ends[2], "each layer fades over its own band: {ends:?}");
+    // A degenerate layer — a band with no height of its own (a first series of zeros sits flat on
+    // the baseline) — stays solid, never a degenerate ramp.
+    let d = ChartData {
+        category_levels: vec![],
+        palette: vec![],
+        categories: ["Q1", "Q2", "Q3", "Q4"].iter().map(|s| s.to_string()).collect(),
+        series: vec![series("Z", &[0.0, 0.0, 0.0, 0.0], [25, 107, 36, 255], ChartKind::AreaStacked)],
+    };
+    let c = chart(ChartKind::AreaStacked);
+    let p = render(&c, &d, 640.0, 400.0, &ApproxMeasure);
+    let solid = p.iter().find(|p| matches!(p, Prim::Polygon { fill: Some(Fill::Solid(s)), .. } if *s == [25, 107, 36, 255]));
+    assert!(solid.is_some(), "a zero-height band resolves to a solid fill, not a degenerate ramp");
 }
 
 #[test]
@@ -2003,7 +2087,11 @@ fn a_polygon_and_a_wedge_carry_paint_and_degrade_like_a_rect() {
     let square = vec![[10.0, 10.0], [60.0, 10.0], [60.0, 60.0], [10.0, 60.0]];
     let solid = Prim::Polygon { pts: square.clone(), fill: Some(Fill::Solid([1, 2, 3, 255])), stroke: None };
     let out = crate::render::finalize(vec![solid], 100.0, 100.0);
-    assert_eq!(out, vec![Prim::Polygon { pts: square.clone(), fill: Some(Fill::Solid([1, 2, 3, 255])), stroke: None }], "a solid polygon round-trips unchanged");
+    assert_eq!(
+        out,
+        vec![Prim::Polygon { pts: square.clone(), fill: Some(Fill::Solid([1, 2, 3, 255])), stroke: None }],
+        "a solid polygon round-trips unchanged"
+    );
 
     let outline = Prim::Polygon { pts: square.clone(), fill: None, stroke: Some(([0, 0, 0, 255], 1.0)) };
     let out = crate::render::finalize(vec![outline], 100.0, 100.0);
@@ -2104,62 +2192,22 @@ fn criterion_one_rounds_only_the_outward_terminal_of_every_bar() {
     // 1. Clustered columns: positive rounds the top two corners, negative rounds the bottom two.
     let mut col = chart(ChartKind::ColumnClustered);
     col.data_labels = false;
-    let prims = render(
-        &col,
-        &solo(&[3.0, -3.0], ChartKind::ColumnClustered),
-        640.0,
-        400.0,
-        &ApproxMeasure,
-    );
+    let prims = render(&col, &solo(&[3.0, -3.0], ChartKind::ColumnClustered), 640.0, 400.0, &ApproxMeasure);
     let radii = rect_radii(&prims);
-    let up = radii
-        .iter()
-        .copied()
-        .find(|r| r[0] > 0.0 || r[1] > 0.0)
-        .expect("positive column: a rounded rect exists");
-    assert!(
-        up[0] == up[1] && up[0] > 0.0 && up[2] == 0.0 && up[3] == 0.0,
-        "positive column: only top corners round, got {up:?}"
-    );
-    let down = radii
-        .iter()
-        .copied()
-        .find(|r| r[2] > 0.0 || r[3] > 0.0)
-        .expect("negative column: a rounded rect exists");
-    assert!(
-        down[2] == down[3] && down[2] > 0.0 && down[0] == 0.0 && down[1] == 0.0,
-        "negative column: only bottom corners round, got {down:?}"
-    );
+    let up = radii.iter().copied().find(|r| r[0] > 0.0 || r[1] > 0.0).expect("positive column: a rounded rect exists");
+    assert!(up[0] == up[1] && up[0] > 0.0 && up[2] == 0.0 && up[3] == 0.0, "positive column: only top corners round, got {up:?}");
+    let down = radii.iter().copied().find(|r| r[2] > 0.0 || r[3] > 0.0).expect("negative column: a rounded rect exists");
+    assert!(down[2] == down[3] && down[2] > 0.0 && down[0] == 0.0 && down[1] == 0.0, "negative column: only bottom corners round, got {down:?}");
 
     // 2. Clustered bars: positive rounds the right two corners, negative rounds the left two.
     let mut bar = chart(ChartKind::BarClustered);
     bar.data_labels = false;
-    let prims = render(
-        &bar,
-        &solo(&[3.0, -3.0], ChartKind::BarClustered),
-        640.0,
-        400.0,
-        &ApproxMeasure,
-    );
+    let prims = render(&bar, &solo(&[3.0, -3.0], ChartKind::BarClustered), 640.0, 400.0, &ApproxMeasure);
     let radii = rect_radii(&prims);
-    let pos = radii
-        .iter()
-        .copied()
-        .find(|r| r[1] > 0.0 || r[2] > 0.0)
-        .expect("positive bar: a rounded rect exists");
-    assert!(
-        pos[1] == pos[2] && pos[1] > 0.0 && pos[0] == 0.0 && pos[3] == 0.0,
-        "positive bar: only right corners round, got {pos:?}"
-    );
-    let neg = radii
-        .iter()
-        .copied()
-        .find(|r| r[0] > 0.0 || r[3] > 0.0)
-        .expect("negative bar: a rounded rect exists");
-    assert!(
-        neg[0] == neg[3] && neg[0] > 0.0 && neg[1] == 0.0 && neg[2] == 0.0,
-        "negative bar: only left corners round, got {neg:?}"
-    );
+    let pos = radii.iter().copied().find(|r| r[1] > 0.0 || r[2] > 0.0).expect("positive bar: a rounded rect exists");
+    assert!(pos[1] == pos[2] && pos[1] > 0.0 && pos[0] == 0.0 && pos[3] == 0.0, "positive bar: only right corners round, got {pos:?}");
+    let neg = radii.iter().copied().find(|r| r[0] > 0.0 || r[3] > 0.0).expect("negative bar: a rounded rect exists");
+    assert!(neg[0] == neg[3] && neg[0] > 0.0 && neg[1] == 0.0 && neg[2] == 0.0, "negative bar: only left corners round, got {neg:?}");
 
     // 3. Mixed-sign stacked columns: each category has one positive terminal on top, one negative
     // terminal on the bottom, and every internal join square.
@@ -2179,20 +2227,12 @@ fn criterion_one_rounds_only_the_outward_terminal_of_every_bar() {
     let mut rects: Vec<(f32, f32, f32, f32, [f32; 4])> = prims
         .iter()
         .filter_map(|p| match p {
-            Prim::Rect {
-                x,
-                y,
-                w,
-                h,
-                radii,
-                fill: Some(_),
-                ..
-            } if *h > 0.5 && *w > 5.0 => Some((*x, *y, *w, *h, *radii)),
+            Prim::Rect { x, y, w, h, radii, fill: Some(_), .. } if *h > 0.5 && *w > 5.0 => Some((*x, *y, *w, *h, *radii)),
             _ => None,
         })
         .collect();
     rects.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
-    let mut groups: Vec<Vec<(f32, f32, f32, f32, [f32; 4])>> = Vec::new();
+    let mut groups: Vec<Vec<BarRect>> = Vec::new();
     for r in rects {
         let tol = (r.2 * 0.6).max(4.0);
         if let Some(g) = groups.iter_mut().find(|g| (g[0].0 - r.0).abs() <= tol) {
@@ -2201,14 +2241,9 @@ fn criterion_one_rounds_only_the_outward_terminal_of_every_bar() {
             groups.push(vec![r]);
         }
     }
-    let mut bar_groups: Vec<Vec<(f32, f32, f32, f32, [f32; 4])>> =
-        groups.into_iter().filter(|g| g.len() == 3).collect();
+    let mut bar_groups: Vec<Vec<BarRect>> = groups.into_iter().filter(|g| g.len() == 3).collect();
     bar_groups.sort_by(|a, b| a[0].0.total_cmp(&b[0].0));
-    assert_eq!(
-        bar_groups.len(),
-        2,
-        "mixed stacked: expected two category columns with 3 segments, got {bar_groups:?}"
-    );
+    assert_eq!(bar_groups.len(), 2, "mixed stacked: expected two category columns with 3 segments, got {bar_groups:?}");
     for col_rects in &mut bar_groups {
         col_rects.sort_by(|a, b| a.1.total_cmp(&b.1));
         let top = col_rects.first().copied().expect("top segment");
@@ -2224,12 +2259,7 @@ fn criterion_one_rounds_only_the_outward_terminal_of_every_bar() {
             bottom.4
         );
         for mid in col_rects.iter().skip(1).take(col_rects.len().saturating_sub(2)) {
-            assert_eq!(
-                mid.4,
-                [0.0; 4],
-                "mixed stacked column: interior segment stays square, got {:?}",
-                mid.4
-            );
+            assert_eq!(mid.4, [0.0; 4], "mixed stacked column: interior segment stays square, got {:?}", mid.4);
         }
         assert_eq!(
             col_rects.iter().filter(|r| r.4 == [0.0; 4]).count(),
@@ -2247,20 +2277,12 @@ fn criterion_one_rounds_only_the_outward_terminal_of_every_bar() {
         category_levels: vec![],
         palette: vec![],
         categories: (0..values.len()).map(|i| format!("C{i}")).collect(),
-        series: vec![series(
-            "S",
-            &values,
-            [200, 80, 40, 255],
-            ChartKind::ColumnClustered,
-        )],
+        series: vec![series("S", &values, [200, 80, 40, 255], ChartKind::ColumnClustered)],
     };
     let prims = render(&thin, &d, 60.0, 60.0, &ApproxMeasure);
     let radii = rect_radii(&prims);
     assert!(!radii.is_empty(), "hairline case: chart still draws bars");
-    assert!(
-        radii.iter().all(|r| *r == [0.0; 4]),
-        "hairline case: merged hairline bars stay square, got {radii:?}"
-    );
+    assert!(radii.iter().all(|r| *r == [0.0; 4]), "hairline case: merged hairline bars stay square, got {radii:?}");
 
     // 5. 100% stacked columns share the same two-terminal invariant.
     let mut stacked100 = chart(ChartKind::ColumnStacked100);
@@ -2279,20 +2301,12 @@ fn criterion_one_rounds_only_the_outward_terminal_of_every_bar() {
     let mut rects: Vec<(f32, f32, f32, f32, [f32; 4])> = prims
         .iter()
         .filter_map(|p| match p {
-            Prim::Rect {
-                x,
-                y,
-                w,
-                h,
-                radii,
-                fill: Some(_),
-                ..
-            } if *h > 0.5 && *w > 5.0 => Some((*x, *y, *w, *h, *radii)),
+            Prim::Rect { x, y, w, h, radii, fill: Some(_), .. } if *h > 0.5 && *w > 5.0 => Some((*x, *y, *w, *h, *radii)),
             _ => None,
         })
         .collect();
     rects.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
-    let mut groups: Vec<Vec<(f32, f32, f32, f32, [f32; 4])>> = Vec::new();
+    let mut groups: Vec<Vec<BarRect>> = Vec::new();
     for r in rects {
         let tol = (r.2 * 0.6).max(4.0);
         if let Some(g) = groups.iter_mut().find(|g| (g[0].0 - r.0).abs() <= tol) {
@@ -2301,14 +2315,9 @@ fn criterion_one_rounds_only_the_outward_terminal_of_every_bar() {
             groups.push(vec![r]);
         }
     }
-    let mut bar_groups: Vec<Vec<(f32, f32, f32, f32, [f32; 4])>> =
-        groups.into_iter().filter(|g| g.len() == 3).collect();
+    let mut bar_groups: Vec<Vec<BarRect>> = groups.into_iter().filter(|g| g.len() == 3).collect();
     bar_groups.sort_by(|a, b| a[0].0.total_cmp(&b[0].0));
-    assert_eq!(
-        bar_groups.len(),
-        2,
-        "stacked100: expected two category columns with 3 segments, got {bar_groups:?}"
-    );
+    assert_eq!(bar_groups.len(), 2, "stacked100: expected two category columns with 3 segments, got {bar_groups:?}");
     for col_rects in &mut bar_groups {
         col_rects.sort_by(|a, b| a.1.total_cmp(&b.1));
         let top = col_rects.first().copied().expect("stacked100 top segment");
@@ -2355,13 +2364,11 @@ fn a_bar_ramp_runs_along_the_value_axis() {
 
 #[test]
 fn markers_cycle_the_four_hulls_by_series_index() {
-    use crate::render::shape::{MarkerGeometry, marker_shape, geometry};
+    use crate::render::shape::{MarkerGeometry, geometry, marker_shape};
     let c = chart(ChartKind::LineMarkers);
     let prims = render(&c, &sample(ChartKind::LineMarkers), 640.0, 400.0, &ApproxMeasure);
-    let markers: Vec<&Prim> = prims
-        .iter()
-        .filter(|p| matches!(p, Prim::Circle { stroke: Some(_), .. } | Prim::Polygon { stroke: Some(_), .. }))
-        .collect();
+    let markers: Vec<&Prim> =
+        prims.iter().filter(|p| matches!(p, Prim::Circle { stroke: Some(_), .. } | Prim::Polygon { stroke: Some(_), .. })).collect();
     assert_eq!(markers.len(), 18, "one ringed marker per point across three series");
     let hull_of = |p: &Prim| -> (Vec<[f32; 2]>, f32) {
         match p {
@@ -2401,10 +2408,8 @@ fn markers_cycle_the_four_hulls_by_series_index() {
     five.series.push(series("West", &[5000.0, 6000.0, 7000.0, 8000.0, 9000.0, 10000.0], [90, 40, 120, 255], ChartKind::LineMarkers));
     five.series.push(series("North2", &[11000.0, 12000.0, 13000.0, 14000.0, 15000.0, 16000.0], [40, 120, 90, 255], ChartKind::LineMarkers));
     let prims = render(&c, &five, 640.0, 400.0, &ApproxMeasure);
-    let markers: Vec<&Prim> = prims
-        .iter()
-        .filter(|p| matches!(p, Prim::Circle { stroke: Some(_), .. } | Prim::Polygon { stroke: Some(_), .. }))
-        .collect();
+    let markers: Vec<&Prim> =
+        prims.iter().filter(|p| matches!(p, Prim::Circle { stroke: Some(_), .. } | Prim::Polygon { stroke: Some(_), .. })).collect();
     assert_eq!(markers.len(), 30, "five series of six points");
     assert!(matches!(markers[18 + 5], Prim::Polygon { pts, .. } if pts.len() == 3), "series 3 draws the three-point triangle");
     assert!(matches!(markers[24 + 5], Prim::Circle { .. }), "series 4 cycles back to the circle");
@@ -2421,10 +2426,8 @@ fn markers_ring_with_the_card_at_the_preset_weight() {
             let mut c = chart(kind);
             c.style = style;
             let prims = render(&c, &sample(kind), 640.0, 400.0, &ApproxMeasure);
-            let ringed: Vec<&Prim> = prims
-                .iter()
-                .filter(|p| matches!(p, Prim::Circle { stroke: Some(_), .. } | Prim::Polygon { stroke: Some(_), .. }))
-                .collect();
+            let ringed: Vec<&Prim> =
+                prims.iter().filter(|p| matches!(p, Prim::Circle { stroke: Some(_), .. } | Prim::Polygon { stroke: Some(_), .. })).collect();
             assert!(!ringed.is_empty(), "{kind:?} on style {style} draws ringed markers");
             for p in ringed {
                 let stroke = match p {
@@ -2474,23 +2477,18 @@ fn every_marker_shape_has_a_distinct_hull_and_the_same_ring() {
 
 #[test]
 fn legend_swatches_follow_the_series_marker_hull() {
-    use crate::render::shape::{MarkerGeometry, marker_shape, geometry};
+    use crate::render::shape::{MarkerGeometry, geometry, marker_shape};
     let mut c = chart(ChartKind::LineMarkers);
     c.legend = LegendPos::Bottom;
     let prims = render(&c, &sample(ChartKind::LineMarkers), 640.0, 400.0, &ApproxMeasure);
-    let swatches: Vec<&Prim> = prims
-        .iter()
-        .filter(|p| matches!(p, Prim::Circle { stroke: None, .. } | Prim::Polygon { stroke: None, .. }))
-        .collect();
+    let swatches: Vec<&Prim> = prims.iter().filter(|p| matches!(p, Prim::Circle { stroke: None, .. } | Prim::Polygon { stroke: None, .. })).collect();
     assert_eq!(swatches.len(), 3, "one swatch per legend entry");
     for (i, p) in swatches.iter().enumerate() {
         let (cx, cy, r) = match p {
             Prim::Circle { cx, cy, r, .. } => (*cx, *cy, *r),
             Prim::Polygon { pts, .. } => {
-                let cx = pts.iter().map(|q| q[0]).fold(f32::MIN, f32::max) / 2.0
-                    + pts.iter().map(|q| q[0]).fold(f32::MAX, f32::min) / 2.0;
-                let cy = pts.iter().map(|q| q[1]).fold(f32::MIN, f32::max) / 2.0
-                    + pts.iter().map(|q| q[1]).fold(f32::MAX, f32::min) / 2.0;
+                let cx = pts.iter().map(|q| q[0]).fold(f32::MIN, f32::max) / 2.0 + pts.iter().map(|q| q[0]).fold(f32::MAX, f32::min) / 2.0;
+                let cy = pts.iter().map(|q| q[1]).fold(f32::MIN, f32::max) / 2.0 + pts.iter().map(|q| q[1]).fold(f32::MAX, f32::min) / 2.0;
                 let r = pts.iter().map(|q| ((q[0] - cx).powi(2) + (q[1] - cy).powi(2)).sqrt()).fold(0.0f32, f32::max);
                 (cx, cy, r)
             }
