@@ -44,8 +44,10 @@ pub(crate) fn chart_svg(wb: &Workbook, sheet: usize, chart: &Chart, style: &str,
     }
 }
 
+/// The whole element for a scene, unbudgeted: the chart crate's parity fixture is legible to the
+/// engine's own backend tests through this.
 #[cfg(test)]
-fn prims_svg(prims: &[Prim], w: f32, h: f32, style: &str) -> String {
+pub(crate) fn prims_svg(prims: &[Prim], w: f32, h: f32, style: &str) -> String {
     prims_svg_within(prims, w, h, style, usize::MAX).unwrap_or_default()
 }
 

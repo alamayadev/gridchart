@@ -827,4 +827,36 @@ pub(crate) mod tests {
         out.textures_delta.clear();
         assert_eq!(radii, vec![egui::CornerRadius { nw: 8, ne: 0, se: 16, sw: 4 }]);
     }
+
+    /// PRIM-03 (egui leg): the shared in-code fixture reaches the canvas — the ramp's exact stops as
+    /// mesh vertices, and the ring colour as the stroke of every marker hull.
+    #[test]
+    fn the_fixture_paints_gradient_stops_and_ringed_markers() {
+        use gridcraft_chart::fixture;
+
+        let prims = gridcraft_chart::parity_fixture();
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(Default::default(), |ui| paint_prims(ui.painter(), pos2(0.0, 0.0), &prims, 1.0));
+        let colours = mesh_colours(&out);
+        // A filled path and its stroke are two shapes; a ring is a stroke with a width.
+        let rings: Vec<Color32> = out
+            .shapes
+            .iter()
+            .filter_map(|cs| match &cs.shape {
+                egui::Shape::Circle(c) => Some((c.stroke.width, c.stroke.color)),
+                egui::Shape::Path(p) => match p.stroke.color {
+                    egui::epaint::ColorMode::Solid(c) => Some((p.stroke.width, c)),
+                    egui::epaint::ColorMode::UV(_) => None,
+                },
+                _ => None,
+            })
+            .filter(|(w, _)| *w > 0.0)
+            .map(|(_, c)| c)
+            .collect();
+        out.textures_delta.clear();
+        assert_eq!(colours.first(), Some(&rgba(fixture::FROM)), "the near stop is exact");
+        assert_eq!(colours.last(), Some(&rgba(fixture::TO)), "the far stop is exact");
+        assert_eq!(rings.len(), 5, "one ring per marker hull, got {rings:?}");
+        assert!(rings.iter().all(|c| *c == rgba(fixture::RING)), "every ring is the ring colour, got {rings:?}");
+    }
 }

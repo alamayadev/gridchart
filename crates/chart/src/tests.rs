@@ -2171,3 +2171,77 @@ fn the_fixture_survives_hostile_numbers_without_panicking() {
         }
     }
 }
+
+// ------------------------------------------------------------------ the cross-backend fixture
+
+/// PRIM-03: the one in-code fixture reads the same in the pixel backend — exact stop colours at both
+/// ends of the ramp, the ring colour and the body colour of every marker hull, and a corner rounded
+/// on one side only.
+#[test]
+fn the_fixture_round_trips_through_the_rasteriser() {
+    let (w, h) = (fixture::WIDTH as u32, fixture::HEIGHT as u32);
+    let px = rasterize(&parity_fixture(), w, h, fixture::BACKGROUND);
+    assert_eq!(px.len(), (w * h * 4) as usize, "a full RGBA buffer");
+
+    for (i, [ring, body]) in fixture::MARKER_PROBES.iter().enumerate() {
+        assert_eq!(pixel(&px, w, ring[0], ring[1]), fixture::RING, "marker {i}: the ring band is the ring colour");
+        assert_eq!(pixel(&px, w, body[0], body[1]), fixture::MARKER_FILL, "marker {i}: the marker body is its own colour");
+    }
+
+    let [from, to] = fixture::GRADIENT_PROBES;
+    assert_eq!(pixel(&px, w, from[0], from[1]), fixture::FROM, "the ramp starts at its exact near stop");
+    assert_eq!(pixel(&px, w, to[0], to[1]), fixture::TO, "the ramp ends at its exact far stop");
+
+    let [rounded, square] = fixture::ASYMMETRIC_PROBES;
+    assert_eq!(pixel(&px, w, rounded[0], rounded[1]), fixture::BACKGROUND, "the rounded corner is cut out, not painted");
+    assert_eq!(pixel(&px, w, square[0], square[1]), fixture::ASYMMETRIC_FILL, "the square corner keeps the fill");
+}
+
+/// PRIM-03 / D-03: hostile stops, a non-finite axis and impossible radii degrade to a solid start
+/// colour and square corners, and the central pass drops nothing that has geometry.
+#[test]
+fn the_fixture_survives_a_hostile_gradient_and_radii_set() {
+    let (w, h) = (fixture::WIDTH as u32, fixture::HEIGHT as u32);
+    let near = [200u8, 10, 10, 255];
+    let flat = [90u8, 90, 200, 255];
+    let mut scene = parity_fixture();
+    let kept = scene.len();
+    scene.extend([
+        Prim::Rect {
+            x: 160.0,
+            y: 56.0,
+            w: 40.0,
+            h: 24.0,
+            fill: Some(Fill::Linear { from: near, to: [10, 200, 10, 255], start: [f32::NAN; 2], end: [f32::NAN; 2] }),
+            stroke: None,
+            radii: [0.0; 4],
+        },
+        Prim::Rect {
+            x: 160.0,
+            y: 88.0,
+            w: 40.0,
+            h: 24.0,
+            fill: Some(Fill::solid(flat)),
+            stroke: Some(([255, 255, 255, 255], 1.0)),
+            radii: [f32::NAN, -1.0, f32::INFINITY, 1e30],
+        },
+        Prim::Rect {
+            x: 204.0,
+            y: 56.0,
+            w: 24.0,
+            h: 24.0,
+            fill: Some(Fill::Linear { from: [10, 10, 10, 255], to: [250, 250, 250, 255], start: [216.0, 68.0], end: [216.0, 68.0] }),
+            stroke: None,
+            radii: [0.0; 4],
+        },
+    ]);
+
+    let finalised = crate::render::finalize(scene, fixture::WIDTH, fixture::HEIGHT);
+    assert_eq!(finalised.len(), kept + 3, "only a primitive with no geometry is dropped");
+
+    let px = rasterize(&finalised, w, h, fixture::BACKGROUND);
+    assert_eq!(px.len(), (w * h * 4) as usize, "a full buffer, never an empty one");
+    assert_eq!(pixel(&px, w, 161, 57), near, "a ramp with a non-finite axis degrades to its near stop");
+    assert_eq!(pixel(&px, w, 161, 89), flat, "hostile radii degrade to square corners, not to a hole");
+    assert_eq!(pixel(&px, w, 210, 60), [10, 10, 10, 255], "a zero-length ramp degrades to its near stop");
+}

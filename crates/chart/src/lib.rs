@@ -11,6 +11,7 @@
 #![forbid(unsafe_code)]
 
 mod axis;
+pub mod fixture;
 mod raster;
 mod render;
 mod resolve;
@@ -25,6 +26,7 @@ pub use gridcraft_model::{Chart, ChartKind, LegendPos, SparklineKind, Trendline,
 use serde::{Deserialize, Serialize};
 
 pub use axis::{Scale, format_number, nice_scale};
+pub use fixture::parity_fixture;
 pub use raster::rasterize;
 pub use render::{Swatch, legend_entries, render, supports_trendline};
 pub use resolve::palette::{

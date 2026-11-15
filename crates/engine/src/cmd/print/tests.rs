@@ -1133,3 +1133,42 @@ fn translucent_ink_composites_against_the_preset_card_not_white() {
     }
     assert_ne!(seen[0], seen[1], "the light and dark presets composite the same ink differently");
 }
+
+/// PRIM-03: the shared in-code fixture is readable by the two vector backends too. One call, no
+/// golden file: the SVG rings every marker hull and defines the ramp's exact stops, and the PDF
+/// carries native axial shading plus a white ring stroke.
+#[test]
+fn the_fixture_reaches_the_svg_and_the_pdf_rings() {
+    use gridcraft_chart::fixture;
+    use gridcraft_chart::parity_fixture;
+
+    fn hex(c: [u8; 4]) -> String {
+        format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2])
+    }
+
+    let prims = parity_fixture();
+    let (w, h) = (fixture::WIDTH, fixture::HEIGHT);
+
+    // SVG: a real user-space gradient with the exact stops, and the ring on all five marker hulls.
+    let svg = crate::chart_svg::prims_svg(&prims, w, h, "");
+    assert!(svg.contains(&format!("<stop offset=\"0\" stop-color=\"{}\"", hex(fixture::FROM))), "the near stop is exact, got {svg}");
+    assert!(svg.contains(&format!("<stop offset=\"1\" stop-color=\"{}\"", hex(fixture::TO))), "the far stop is exact");
+    assert!(svg.contains("gradientUnits=\"userSpaceOnUse\""), "the ramp is in user space");
+    assert_eq!(svg.matches("<polygon ").count(), 4, "one polygon per polygonal hull");
+    assert_eq!(svg.matches("<circle ").count(), 1, "one circle marker");
+    assert_eq!(svg.matches(&format!("stroke=\"{}\"", hex(fixture::RING))).count(), 5, "every marker hull keeps its ring: {svg}");
+    assert!(svg.contains(&format!("stroke-width=\"{}\"", fixture::RING_WEIGHT)), "the ring width reaches the SVG");
+
+    // PDF: native axial shading whose operands are the card-composited stops, and the ring stroke.
+    let mut doc = gridcraft_pdf::PdfDoc::new();
+    {
+        let pg = doc.add_page(w, h);
+        super::draw::draw_prims(pg, &prims, super::draw::Xf { ox: 0.0, oy: 0.0, k: 1.0 });
+    }
+    let pdf = doc.finish();
+    let bg = [fixture::CARD[0], fixture::CARD[1], fixture::CARD[2]];
+    assert!(contains(&pdf, "/ShadingType 2"), "the ramp is vector axial shading, not a bitmap");
+    assert!(contains(&pdf, &format!("/C0 [{} ", rgb_op(over(fixture::FROM, bg)))), "the near stop is exact, composited against the card");
+    assert!(contains(&pdf, &format!("/C1 [{} ", rgb_op(over(fixture::TO, bg)))), "the far stop is exact, composited against the card");
+    assert!(contains(&pdf, &rgb_op(over(fixture::RING, bg))), "the marker ring is stroked");
+}
