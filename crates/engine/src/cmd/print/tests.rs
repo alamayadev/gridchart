@@ -1003,7 +1003,7 @@ fn chart_budget_counts_path_points_and_drops_charts_that_do_not_fit() {
         radii: [0.0; 4],
     };
     let hull =
-        Prim::Polygon { pts: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]], fill: [1, 2, 3, 255], stroke: Some(([255, 255, 255, 255], 2.0)) };
+        Prim::Polygon { pts: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]], fill: Some(gridcraft_chart::Fill::solid([1, 2, 3, 255])), stroke: Some(([255, 255, 255, 255], 2.0)) };
     assert_eq!(chart_cost(&[ramp, hull]), 1 + 5, "a ramp is one unit; a four-point hull is its points plus one");
     // The shared fixture costs exactly what its geometry says, and a budget of exactly that much
     // admits it: the ring and the ramp have no budget of their own.

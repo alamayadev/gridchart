@@ -91,12 +91,14 @@ fn prims_svg_within(prims: &[Prim], w: f32, h: f32, style: &str, budget: usize) 
             }
             Prim::Polygon { pts, fill, stroke } => {
                 let _ = write!(out, "<polygon points=\"{}\"", points(pts));
-                paint(&mut out, *fill, None, *stroke);
+                let grad = fill.as_ref().and_then(|g| gradient_id(&grads, g));
+                paint(&mut out, *fill, grad, *stroke);
                 out.push_str("/>");
             }
             Prim::Wedge { cx, cy, r_outer, r_inner, a0, a1, fill, stroke } => {
                 let _ = write!(out, "<path d=\"{}\"", wedge_path(*cx, *cy, *r_outer, *r_inner, *a0, *a1));
-                paint(&mut out, *fill, None, *stroke);
+                let grad = fill.as_ref().and_then(|g| gradient_id(&grads, g));
+                paint(&mut out, *fill, grad, *stroke);
                 out.push_str("/>");
             }
             Prim::Circle { cx, cy, r, fill, stroke } => {
@@ -169,14 +171,20 @@ fn directional(fill: &Fill) -> bool {
 fn gradients(prims: &[Prim]) -> Vec<Fill> {
     let mut out: Vec<Fill> = Vec::new();
     for p in prims {
-        let Prim::Rect { fill: Some(f @ Fill::Linear { .. }), .. } = p else {
+        let f = match p {
+            Prim::Rect { fill: Some(f @ Fill::Linear { .. }), .. }
+            | Prim::Polygon { fill: Some(f @ Fill::Linear { .. }), .. }
+            | Prim::Wedge { fill: Some(f @ Fill::Linear { .. }), .. } => Some(*f),
+            _ => None,
+        };
+        let Some(f) = f else {
             continue;
         };
         if out.len() >= MAX_SVG_GRADIENTS {
             break;
         }
-        if directional(f) && !out.contains(f) {
-            out.push(*f);
+        if directional(&f) && !out.contains(&f) {
+            out.push(f);
         }
     }
     out
@@ -404,6 +412,39 @@ mod tests {
     fn a_full_circle_wedge_keeps_a_drawable_arc() {
         let d = wedge_path(0.0, 0.0, 10.0, 0.0, 0.0, std::f32::consts::TAU);
         assert!(d.contains("A10 10 0 1 1 ") && d.ends_with("L0 0 Z"), "{d}");
+    }
+
+    #[test]
+    fn a_gradient_polygon_and_wedge_reach_the_svg_defs() {
+        let fill = Fill::Linear { from: [200, 10, 10, 255], to: [10, 10, 200, 255], start: [0.0, 0.0], end: [0.0, 100.0] };
+        let poly = Prim::Polygon {
+            pts: vec![[0.0, 0.0], [20.0, 0.0], [20.0, 100.0], [0.0, 100.0]],
+            fill: Some(fill),
+            stroke: None,
+        };
+        let wedge = Prim::Wedge {
+            cx: 50.0,
+            cy: 50.0,
+            r_outer: 40.0,
+            r_inner: 10.0,
+            a0: 0.0,
+            a1: 1.0,
+            fill: Some(fill),
+            stroke: None,
+        };
+        let svg = prims_svg(&[poly, wedge], 120.0, 120.0, "");
+        for part in [
+            "<defs><linearGradient id=\"g0\" gradientUnits=\"userSpaceOnUse\" x1=\"0\" y1=\"0\" x2=\"0\" y2=\"100\">",
+            "<stop offset=\"0\" stop-color=\"#c80a0a\"/>",
+            "<stop offset=\"1\" stop-color=\"#0a0ac8\"/>",
+            "</linearGradient></defs>",
+        ] {
+            assert!(svg.contains(part), "{part} in {svg}");
+        }
+        assert_eq!(svg.matches("<linearGradient").count(), 1, "polygon and wedge share the same gradient def: {svg}");
+        assert_eq!(svg.matches("fill=\"url(#g0)\"").count(), 2, "polygon and wedge both reference the gradient: {svg}");
+        let defs = svg.find("<defs>").unwrap_or(0);
+        assert!(defs > 0 && defs < svg.find("fill=\"url(#g0)\"").unwrap_or(0), "defs precede uses: {svg}");
     }
 
     /// D-03: degenerate rects are still drawable shapes. All-non-finite radii clamp to zero and
