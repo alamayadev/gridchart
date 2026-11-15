@@ -55,6 +55,8 @@ fn rounded_outline(r: Rect, radius: egui::CornerRadius) -> Vec<Pos2> {
     let mut out = Vec::with_capacity(4 * 9);
     // Twelve o’clock to three for a top-right corner, and so on: the direction the chart
     // rasterizer and the PDF page trace the same corner.
+    // Twelve o clock to three for a top-right corner, and so on: the direction the chart rasterizer
+    // and the PDF page trace the same corner.
     corner_outline(&mut out, r.left() + nw, r.top() + nw, nw, 3.0 * FRAC_PI_2);
     corner_outline(&mut out, r.right() - ne, r.top() + ne, ne, 0.0);
     corner_outline(&mut out, r.right() - se, r.bottom() - se, se, FRAC_PI_2);
