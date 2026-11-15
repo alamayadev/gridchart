@@ -20,7 +20,7 @@ fn data_of(series: usize, points: usize) -> ChartData {
             .map(|s| SeriesData {
                 name: format!("S{s}"),
                 values: (0..points).map(|i| Some(((i * 7 + s * 13) % 100 + 1) as f64)).collect(),
-                color: series_color(&Default::default(), s),
+                color: series_color(&chart(ChartKind::ColumnClustered), s),
                 ..SeriesData::default()
             })
             .collect(),

@@ -1,11 +1,18 @@
 //! Pulls chart data (names, categories, values, formats, colours) out of a workbook.
+//!
+//! Palette contract: each preset is exactly six base colours. `series_color`-style tinting
+//! (`CYCLE_TINTS`) still applies for series beyond six, per D-02. `PALETTE_CYCLE = 36` is unchanged.
+
+pub mod palette;
+pub mod style;
 
 use gridcraft_calc::evaluate;
 use gridcraft_core::{CellRef, MAX_COLS, MAX_ROWS, RangeRef, Value, category_levels, number_to_text};
-use gridcraft_model::{Chart, ChartKind, Theme, Workbook, style::apply_tint};
+use gridcraft_model::{Chart, ChartKind, Workbook, style::apply_tint};
 use gridcraft_numfmt::{NumberFormat, format_value};
 
 use crate::{ChartData, Rgba, SeriesData, TrendlineData};
+use palette::{PALETTE_DEFAULT_TABLE, chart_style_preset};
 
 /// Cap on points per series (keeps whole-column references from exploding).
 pub(crate) const MAX_POINTS: usize = 100_000;
@@ -28,20 +35,25 @@ const CYCLE_TINTS: [f64; 6] = [0.0, 0.4, -0.25, 0.6, -0.5, 0.2];
 /// `series_color` repeats after this many colours (six accents × the tints).
 pub(crate) const PALETTE_CYCLE: usize = 6 * CYCLE_TINTS.len();
 
-/// Colour of the `i`-th series: theme accents 1–6, then tinted variations of them.
-pub fn series_color(theme: &Theme, i: usize) -> Rgba {
-    let accent = i % 6;
+/// Colour of the `i`-th series within a six-colour ramp: the six base colours in order, then
+/// tinted variations of them (`CYCLE_TINTS` per group of six, per D-02).
+pub fn ramp_color(ramp: &[Rgba; 6], i: usize) -> Rgba {
+    let base = ramp.get(i % 6).copied().unwrap_or(PALETTE_DEFAULT_TABLE[0]);
     let cycle = (i / 6) % CYCLE_TINTS.len();
-    let base = theme.colors.get(4 + accent).copied().unwrap_or(0x156082);
-    let rgb = [(base >> 16) as u8, (base >> 8) as u8, base as u8];
     let tint = CYCLE_TINTS.get(cycle).copied().unwrap_or(0.0);
-    let [r, g, b] = apply_tint(rgb, tint);
+    let [r, g, b] = apply_tint([base[0], base[1], base[2]], tint);
     [r, g, b, 0xFF]
 }
 
-/// The first `n` series colours for `theme`.
-pub fn default_palette(theme: &Theme, n: usize) -> Vec<Rgba> {
-    (0..n.min(4096)).map(|i| series_color(theme, i)).collect()
+/// Colour of the `i`-th series in `chart`. The chart's style preset owns the series ramp outright
+/// (D-01), so the workbook theme's accents never reach a chart fill.
+pub fn series_color(chart: &Chart, i: usize) -> Rgba {
+    ramp_color(chart_style_preset(chart.style), i)
+}
+
+/// The first `n` series colours for `chart`.
+pub fn default_palette(chart: &Chart, n: usize) -> Vec<Rgba> {
+    (0..n.min(4096)).map(|i| series_color(chart, i)).collect()
 }
 
 /// Splits `Sheet!A1:B2` / `'My Sheet'!$A$1` / `A1:B2` into a sheet index and range.
@@ -487,8 +499,7 @@ pub fn resolve(wb: &Workbook, sheet: usize, chart: &Chart) -> ChartData {
     for (i, s) in chart.series.iter().take(MAX_SERIES).enumerate() {
         let values = nums(wb, sheet, &s.values, limit);
         let name = s.name.as_deref().map(|n| series_name(wb, sheet, n)).filter(|n| !n.is_empty()).unwrap_or_else(|| format!("Series{}", i + 1));
-        let color =
-            s.color.as_ref().and_then(|c| c.resolve(&wb.theme)).map(|[r, g, b]| [r, g, b, 0xFF]).unwrap_or_else(|| series_color(&wb.theme, i));
+        let color = s.color.as_ref().and_then(|c| c.resolve(&wb.theme)).map(|[r, g, b]| [r, g, b, 0xFF]).unwrap_or_else(|| series_color(chart, i));
         let kind = effective_kind(chart.kind, s.kind, i);
         let x = match (&s.categories, numeric_x || matches!(kind, ChartKind::Scatter | ChartKind::ScatterLines | ChartKind::Bubble)) {
             // X values with text in them (labels) are ignored: the points are numbered 1..n.
@@ -533,7 +544,7 @@ pub fn resolve(wb: &Workbook, sheet: usize, chart: &Chart) -> ChartData {
     }
     let n = series.iter().map(|s| s.values.len()).max().unwrap_or(0);
     let categories = categories.unwrap_or_else(|| (1..=n).map(|i| i.to_string()).collect());
-    let palette = default_palette(&wb.theme, n.min(PALETTE_CYCLE));
+    let palette = default_palette(chart, n.min(PALETTE_CYCLE));
     ChartData { categories, category_levels, series, palette }
 }
 

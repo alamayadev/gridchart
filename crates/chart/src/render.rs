@@ -3,10 +3,11 @@
 use std::borrow::Cow;
 use std::f32::consts::{PI, TAU};
 
-use gridcraft_model::{Chart, ChartKind, LineDash, QuartileMethod, Theme, TrendlineKind};
+use gridcraft_model::{Chart, ChartKind, LineDash, QuartileMethod, TrendlineKind};
 
 use crate::axis::{Fmt, Scale, clean, nice_scale};
-use crate::resolve::{MAX_POINTS, MAX_SERIES, MAX_TRENDLINES, points_per_series, series_color};
+use crate::resolve::style::{ChartStyle, chart_style};
+use crate::resolve::{MAX_POINTS, MAX_SERIES, MAX_TRENDLINES, points_per_series, ramp_color};
 use crate::trend::{auto_name, fit_trendline, moving_average};
 use crate::{ChartData, HAlign, Measure, Prim, Rgba, SeriesData, VAlign};
 
@@ -25,12 +26,10 @@ use legend::draw_legend;
 pub use legend::{Swatch, legend_entries};
 pub use trend::supports_trendline;
 
-pub(crate) const TEXT: Rgba = [0x59, 0x59, 0x59, 0xFF];
+/// Ink readable on a *series fill* (`on`), independent of the card: white on dark fills, near-black
+/// on light ones. The card's own ink lives in [`Ctx::style`].
 const DARK_TEXT: Rgba = [0x26, 0x26, 0x26, 0xFF];
-const GRID: Rgba = [0xD9, 0xD9, 0xD9, 0xFF];
-const AXIS: Rgba = [0xBF, 0xBF, 0xBF, 0xFF];
 const WHITE: Rgba = [0xFF, 0xFF, 0xFF, 0xFF];
-const STOCK: Rgba = [0x40, 0x40, 0x40, 0xFF];
 pub(crate) const UP: Rgba = [0x3E, 0x9B, 0x5F, 0xFF];
 pub(crate) const DOWN: Rgba = [0xD6, 0x4F, 0x45, 0xFF];
 
@@ -56,6 +55,8 @@ pub(crate) const MAX_WEDGES: usize = 2_048;
 struct Ctx<'a> {
     out: Vec<Prim>,
     m: &'a dyn Measure,
+    /// Resolved surface and ink for this chart's style preset.
+    style: ChartStyle,
 }
 
 #[cfg(test)]
@@ -213,14 +214,17 @@ pub fn render(chart: &Chart, data: &ChartData, w: f32, h: f32, m: &dyn Measure) 
         return vec![];
     }
     let data = sanitized(data);
-    let mut ctx = Ctx { out: Vec::new(), m };
-    ctx.out.push(Prim::Rect { x: 0.0, y: 0.0, w, h, fill: Some(WHITE), stroke: Some((GRID, 1.0)), radius: 0.0 });
+    let style = chart_style(chart.style);
+    let mut ctx = Ctx { out: Vec::new(), m, style };
+    // The card is an explicit primitive (prims[0]), so a dark preset paints its own surface here
+    // rather than relying on whatever background the host happens to draw behind the chart.
+    ctx.out.push(Prim::Rect { x: 0.0, y: 0.0, w, h, fill: Some(style.card), stroke: Some((style.card_border, 1.0)), radius: 0.0 });
     let pad = (w.min(h) * 0.04).clamp(2.0, 10.0);
     let mut area = Bx { x: pad, y: pad, w: w - 2.0 * pad, h: h - 2.0 * pad };
     if let Some(t) = chart_title(chart, &data) {
         let size = TITLE_SIZE.min(h * 0.12).max(4.0);
         let t = ctx.fit(&t, size, area.w);
-        ctx.text(w / 2.0, area.y, &t, size, TEXT, (HAlign::Center, VAlign::Top));
+        ctx.text(w / 2.0, area.y, &t, size, ctx.style.text, (HAlign::Center, VAlign::Top));
         let used = size * 1.3 + 4.0;
         area.y += used;
         area.h -= used;

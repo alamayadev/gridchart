@@ -1,8 +1,8 @@
 use super::frame::Bx;
 use super::trend::supports_trendline;
 use super::{
-    Chart, ChartData, ChartKind, Ctx, DOWN, HAlign, LABEL_SIZE, MAX_CATS, MAX_SERIES, MAX_TRENDLINES, Prim, Rgba, SeriesData, TEXT, Theme, UP,
-    VAlign, auto_name, series_color,
+    Chart, ChartData, ChartKind, Ctx, DOWN, HAlign, LABEL_SIZE, MAX_CATS, MAX_SERIES, MAX_TRENDLINES, Prim, Rgba, SeriesData, UP, VAlign, auto_name,
+    chart_style, ramp_color,
 };
 use gridcraft_model::LegendPos;
 
@@ -25,7 +25,11 @@ pub(super) fn plot_kind(chart: &Chart, s: &SeriesData, i: usize) -> ChartKind {
 pub(super) fn point_color(data: &ChartData, j: usize) -> Rgba {
     match (j, data.series.first()) {
         (0, Some(s)) => s.color,
-        _ => j.checked_rem(data.palette.len()).and_then(|k| data.palette.get(k)).copied().unwrap_or_else(|| series_color(&Theme::default(), j)),
+        _ => j
+            .checked_rem(data.palette.len())
+            .and_then(|k| data.palette.get(k))
+            .copied()
+            .unwrap_or_else(|| ramp_color(&crate::resolve::palette::PALETTE_DEFAULT_TABLE, j)),
     }
 }
 
@@ -54,7 +58,7 @@ pub fn legend_entries(chart: &Chart, data: &ChartData) -> Vec<(String, Rgba, Swa
             if data.series.is_empty() {
                 return vec![];
             }
-            let total = data.series.first().map(|s| s.color).unwrap_or(TEXT);
+            let total = data.series.first().map(|s| s.color).unwrap_or(chart_style(chart.style).text);
             vec![("Increase".into(), UP, Swatch::Box), ("Decrease".into(), DOWN, Swatch::Box), ("Total".into(), total, Swatch::Box)]
         }
         _ => {
@@ -140,7 +144,7 @@ pub(super) fn draw_legend(ctx: &mut Ctx, entries: &[(String, Rgba, Swatch)], pos
                         draw_swatch(ctx, e.2, x, yc, s, e.1);
                         let sx = swatch_w(e.2, s) + gap;
                         let t = ctx.fit(&e.0, size, (iw - sx).max(0.0) + 0.5);
-                        ctx.text(x + sx, yc, &t, size, TEXT, (HAlign::Left, VAlign::Middle));
+                        ctx.text(x + sx, yc, &t, size, ctx.style.text, (HAlign::Left, VAlign::Middle));
                     }
                     x += iw + spacing;
                 }
@@ -169,7 +173,7 @@ pub(super) fn draw_legend(ctx: &mut Ctx, entries: &[(String, Rgba, Swatch)], pos
                 draw_swatch(ctx, e.2, x0, yc, s, e.1);
                 let sx = swatch_w(e.2, s) + gap;
                 let t = ctx.fit(&e.0, size, (colw - sx).max(0.0) + 0.5);
-                ctx.text(x0 + sx, yc, &t, size, TEXT, (HAlign::Left, VAlign::Middle));
+                ctx.text(x0 + sx, yc, &t, size, ctx.style.text, (HAlign::Left, VAlign::Middle));
             }
             let used = colw + 8.0;
             if pos == LegendPos::Right { Bx { w: area.w - used, ..area } } else { Bx { x: area.x + used, w: area.w - used, ..area } }

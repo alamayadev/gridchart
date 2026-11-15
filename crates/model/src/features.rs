@@ -598,6 +598,9 @@ pub struct Chart {
     #[serde(default)]
     pub data_table: Option<ChartDataTable>,
     pub gridlines: bool,
+    /// Chart style preset ID. `0` and `1` both resolve to the polished canonical default.
+    /// Deserializes to `0` when `<c:style>` is absent.
+    #[serde(default = "default_chart_style")]
     pub style: u32,
     /// Doughnut hole size as a percentage of the plot radius (Excel's 10–90 range). New charts and
     /// XLSX imports use Excel's 75; a document saved before this field existed reads as 50.
@@ -805,6 +808,21 @@ impl ControlKind {
 /// numbers from 0 to this.
 pub const CONTROL_MAX: u32 = 30_000;
 
+/// Chart style ID constants (gridcraft-chart style system).
+///
+/// `0` and `1` both resolve to the polished canonical default.
+/// `1..=48` are preset IDs selected through the style system; values above `48` fall back to the
+/// canonical default without panic (handled by gridcraft_chart::resolve::palette::chart_style_preset).
+pub const STYLE_DEFAULT: u32 = 0;
+pub const STYLE_POLISHED: u32 = 1;
+pub const STYLE_MAX: u32 = 48;
+
+/// Default chart style ID: the polished canonical default (`0`).
+fn default_chart_style() -> u32 {
+    STYLE_DEFAULT
+}
+
+/// What a button runs when it is pressed.
 /// What a button runs when it is pressed.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
