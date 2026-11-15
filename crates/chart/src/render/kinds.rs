@@ -48,7 +48,7 @@ pub(super) fn histogram(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx
     for (b, c) in counts.iter().enumerate() {
         let top = plot.bottom() - ys.frac(*c as f64) * plot.h;
         let x = plot.x + b as f32 * cw;
-        ctx.rect(x, top, cw, plot.bottom() - top, s.color, Some((WHITE, 0.75)));
+        ctx.rect(x, top, cw, plot.bottom() - top, s.color, Some((ctx.style.slice_seam.0, 0.75)));
         if chart.data_labels {
             ctx.text(x + cw / 2.0, top - 2.0, &c.to_string(), LABEL_SIZE, ctx.style.text, (HAlign::Center, VAlign::Bottom));
         }
@@ -200,7 +200,7 @@ fn wedge(ctx: &mut Ctx, ring: &Ring, a0: f32, sweep: f32, fill: Rgba) {
         return;
     }
     // The halves are filled without a stroke: each would outline its own radial edge at 12
-    // o'clock, painting the white separator straight through the slice.
+    // o'clock, painting the card separator straight through the slice.
     ctx.out.push(Prim::Wedge { cx, cy, r_outer: outer, r_inner: inner, a0, a1: TAU, fill: Some(super::Fill::solid(fill)), stroke: None });
     ctx.out.push(Prim::Wedge { cx, cy, r_outer: outer, r_inner: inner, a0: 0.0, a1: a1 - TAU, fill: Some(super::Fill::solid(fill)), stroke: None });
     if let Some((color, width)) = stroke {
@@ -236,7 +236,7 @@ pub(super) fn pie(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx, inne
         return;
     }
     let ri = r * inner;
-    let ring = Ring { cx, cy, outer: r, inner: ri, stroke: Some((WHITE, 1.5)) };
+    let ring = Ring { cx, cy, outer: r, inner: ri, stroke: Some(ctx.style.slice_seam) };
     let f = Fmt::new(&s.number_format);
     let mut a = (chart.first_slice_angle % 360) as f32 * TAU / 360.0;
     let mut labels = Vec::new();
@@ -301,9 +301,9 @@ pub(super) fn doughnut(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx)
     let mut budget = MAX_WEDGES;
     let mut labels = Vec::new();
     for (k, (s, outer, inner)) in rings.iter().enumerate() {
-        // The white separator is 1.5 units wide, wider than a one-pixel band: on a thin ring it
+        // The card separator is 1.5 units wide, wider than a one-pixel band: on a thin ring it
         // would paint over the fill of this ring and its neighbour, so such rings keep only fill.
-        let stroke = if outer - inner > 1.0 { Some((WHITE, 1.5)) } else { None };
+        let stroke = if outer - inner > 1.0 { Some(ctx.style.slice_seam) } else { None };
         let ring = Ring { cx, cy, outer: *outer, inner: *inner, stroke };
         let vals: Vec<f64> = s.values.iter().take(MAX_CATS).map(|v| v.map(f64::abs).unwrap_or(0.0)).collect();
         let cap = (budget / (rings.len() - k)).max(1);
@@ -421,7 +421,7 @@ pub(super) fn treemap(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx) 
     let f = Fmt::new(&s.number_format);
     for (j, v, b) in squarify(&items, area) {
         let fill = point_color(data, j);
-        ctx.rect(b.x, b.y, b.w, b.h, fill, Some((WHITE, 1.5)));
+        ctx.rect(b.x, b.y, b.w, b.h, fill, Some(ctx.style.slice_seam));
         if b.w > 24.0 && b.h > LABEL_SIZE * 1.6 {
             let name = ctx.fit(&cat_label(data, j), LABEL_SIZE, b.w - 8.0);
             ctx.text(b.x + 4.0, b.y + 4.0, &name, LABEL_SIZE, on(fill), (HAlign::Left, VAlign::Top));

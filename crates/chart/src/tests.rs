@@ -474,6 +474,49 @@ fn doughnut_legend_names_categories_and_matches_every_ring() {
     assert_eq!(rings.len(), 2, "two series must draw two rings");
 }
 
+/// The separator between slices, tiles and bars is the preset's own card at the preset's seam
+/// weight — not a hardcoded white that outlines every slice on the dark family. The histogram
+/// separator keeps its narrow 0.75 weight: a 1.5 stroke would trim three pixels off a hairline bar.
+#[test]
+fn slice_seams_are_the_card_at_the_preset_weight() {
+    for style in [0u32, 4] {
+        let tokens = chart_style(style);
+        assert_eq!(tokens.slice_seam.0, tokens.card, "style {style}: the seam is the card");
+        assert!((1.0..=2.5).contains(&tokens.slice_seam.1), "style {style}: seam weight {}", tokens.slice_seam.1);
+        let seam = Some(tokens.slice_seam);
+        for kind in [ChartKind::Pie, ChartKind::Doughnut] {
+            let mut c = chart(kind);
+            c.style = style;
+            let mut d = sample(kind);
+            d.series.truncate(1);
+            let p = render(&c, &d, 640.0, 400.0, &ApproxMeasure);
+            let wedges: Vec<_> = p.iter().filter(|q| matches!(q, Prim::Wedge { .. })).collect();
+            assert!(wedges.len() >= 3, "{kind:?} draws slices");
+            for q in &wedges {
+                let Prim::Wedge { stroke, .. } = q else { continue };
+                assert_eq!(*stroke, seam, "style {style} {kind:?}: every slice carries the card seam");
+            }
+        }
+        for (kind, want) in [(ChartKind::Treemap, seam), (ChartKind::Histogram, Some((tokens.slice_seam.0, 0.75)))] {
+            let mut c = chart(kind);
+            c.style = style;
+            c.legend = LegendPos::None;
+            let p = render(&c, &sample(kind), 640.0, 400.0, &ApproxMeasure);
+            let tiles: Vec<_> = p
+                .iter()
+                .filter_map(|q| match q {
+                    Prim::Rect { fill, stroke, .. } if *fill != Some(Fill::solid(tokens.card)) => Some(*stroke),
+                    _ => None,
+                })
+                .collect();
+            assert!(tiles.len() >= 3, "{kind:?} draws tiles");
+            for stroke in tiles {
+                assert_eq!(stroke, want, "style {style} {kind:?}: non-card rects carry the seam");
+            }
+        }
+    }
+}
+
 #[test]
 fn legend_counts() {
     let d = sample(ChartKind::ColumnClustered);
