@@ -1873,6 +1873,71 @@ fn pie_points_follow_the_chart_preset() {
     assert_eq!(legend2, legend, "the workbook theme must not change chart colours");
 }
 
+
+/// A 200-category pie whose labels cannot fit inside: every one of them steps outside with a
+/// three-point leader, the leaders never outnumber `MAX_LABELS`, and none of it moves a slice.
+#[test]
+fn pie_leaders_are_bounded_and_never_move_a_slice() {
+    let n = 200;
+    let d = ChartData {
+        category_levels: vec![],
+        palette: vec![],
+        categories: (0..n).map(|j| format!("S{j}")).collect(),
+        series: vec![series("Only", &vec![100.0; n], [20, 96, 130, 255], ChartKind::Pie)],
+    };
+    let mut on = chart(ChartKind::Pie);
+    on.title = None;
+    on.legend = LegendPos::None;
+    let mut off = on.clone();
+    off.data_labels = false;
+    let p_on = render(&on, &d, 480.0, 288.0, &ApproxMeasure);
+    let p_off = render(&off, &d, 480.0, 288.0, &ApproxMeasure);
+    let ink = chart_style(0).text;
+    let leaders: Vec<&Prim> = p_on
+        .iter()
+        .filter(|p| matches!(p, Prim::Line { pts, color, width, .. } if pts.len() == 3 && *color == ink && (*width - 1.0).abs() < 1e-6))
+        .collect();
+    assert!(!leaders.is_empty() && leaders.len() <= 200, "{} leaders stays within MAX_LABELS", leaders.len());
+    for p in &leaders {
+        let Prim::Line { pts, .. } = p else { continue };
+        assert!(pts.iter().all(|q| q[0].is_finite() && q[1].is_finite()), "leader points stay finite");
+    }
+    // MAX_WEDGES + 3 * MAX_LABELS + 64: wedges, leaders, labels and the card, with headroom.
+    assert!(p_on.len() < 2048 + 3 * 200 + 64, "{} prims stays inside the budget", p_on.len());
+    // Labels and leaders never perturb a slice angle or fill: the wedge lists are identical.
+    let wedges = |p: &Vec<Prim>| -> Vec<Prim> {
+        p.iter().filter(|q| matches!(q, Prim::Wedge { .. })).cloned().collect()
+    };
+    assert_eq!(wedges(&p_on), wedges(&p_off), "the wedge list is identical with labels on and off");
+}
+
+/// Past `MAX_LABELS` the gate fails honestly: a 400-category pie draws its wedges but emits no
+/// label and no leader at all, rather than silently truncating the set.
+#[test]
+fn leaders_are_capped_by_max_labels() {
+    let n = 400;
+    let d = ChartData {
+        category_levels: vec![],
+        palette: vec![],
+        categories: (0..n).map(|j| format!("S{j}")).collect(),
+        series: vec![series("Only", &vec![100.0; n], [20, 96, 130, 255], ChartKind::Pie)],
+    };
+    let mut c = chart(ChartKind::Pie);
+    // A single-series chart auto-titles from the series name when `title` is None; suppress it so
+    // the count below proves there is no data label and no leader.
+    c.title = Some(String::new());
+    c.legend = LegendPos::None;
+    let p = render(&c, &d, 480.0, 288.0, &ApproxMeasure);
+    let wedges = p.iter().filter(|q| matches!(q, Prim::Wedge { .. })).count();
+    // A slice that crosses 12 o'clock is drawn as two wedges, so the count can only exceed n.
+    assert!(wedges >= 400, "the wedges themselves are all drawn: {wedges}");
+    let ink = chart_style(0).text;
+    assert!(
+        p.iter().all(|q| !matches!(q, Prim::Line { pts, color, width, .. } if pts.len() == 3 && *color == ink && (*width - 1.0).abs() < 1e-6)),
+        "no leader past MAX_LABELS"
+    );
+    assert_eq!(texts(&p).len(), 0, "no label past MAX_LABELS");
+}
 #[test]
 fn area_charts_draw_source_value_labels_only_when_enabled() {
     for kind in [ChartKind::Area, ChartKind::AreaStacked, ChartKind::AreaStacked100] {
