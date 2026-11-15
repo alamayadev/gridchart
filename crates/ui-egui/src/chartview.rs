@@ -97,7 +97,36 @@ fn ramp_mesh(r: Rect, radius: egui::CornerRadius, from: Color32, to: Color32, a:
     let hub = outline.len() as u32;
     mesh.colored_vertex(r.center(), colour_at(r.center()));
     for i in 0..hub {
-        mesh.add_triangle(hub, 1 + i, 1 + (i + 1) % hub);
+        mesh.add_triangle(hub, i, (i + 1) % hub);
+    }
+    mesh
+}
+
+/// A polygon filled with a linear ramp as vertical strips, with each vertex coloured by its
+/// projection onto  -> b. Modelled on rea_mesh so concave and convex polygons share the same
+/// fill geometry and solid fills can keep their existing fast paths.
+fn ramp_strips(v: &[Pos2], from: Color32, to: Color32, a: Pos2, b: Pos2) -> egui::Mesh {
+    let mut mesh = egui::Mesh::default();
+    let n = v.len();
+    let half = n / 2;
+    if half < 1 {
+        return mesh;
+    }
+    let d = b - a;
+    let len_sq = d.length_sq();
+    let colour_at = |p: Pos2| {
+        let off = p - a;
+        let t = if len_sq > 0.0 && len_sq.is_finite() { ((off.x * d.x + off.y * d.y) / len_sq).clamp(0.0, 1.0) } else { 0.0 };
+        ramp_colour(from, to, t)
+    };
+    for &p in v {
+        mesh.colored_vertex(p, colour_at(p));
+    }
+    for i in 0..half.saturating_sub(1) {
+        let (t0, t1) = (i as u32, (i + 1) as u32);
+        let (b0, b1) = ((n - 1 - i) as u32, (n - 2 - i) as u32);
+        mesh.add_triangle(t0, b0, t1);
+        mesh.add_triangle(t1, b0, b1);
     }
     mesh
 }
@@ -173,14 +202,38 @@ pub fn paint_prims(p: &Painter, origin: Pos2, prims: &[Prim], z: f32) {
                 if v.len() < 3 {
                     continue;
                 }
-                // A ramp paints flat here until the per-vertex mesh lands (M3.6); a solid fill
-                // paints exactly as before, and an unfilled polygon draws only its stroke.
-                let col = fill.map_or(Color32::TRANSPARENT, |f| rgba(f.start()));
-                let shape = PathShape { points: v.clone(), closed: true, fill: col, stroke: PathStroke::NONE };
-                if is_convex(&v) {
-                    p.add(shape);
-                } else {
-                    p.add(egui::Shape::mesh(area_mesh(&v, col)));
+                match fill {
+                    Some(Fill::Linear { from, to, start, end }) => {
+                        let (a, b) = (pt(start[0], start[1]), pt(end[0], end[1]));
+                        let len_sq = (b - a).length_sq();
+                        if len_sq.is_finite() && len_sq > MIN_RAMP_SPAN {
+                            p.add(egui::Shape::mesh(ramp_strips(&v, rgba(*from), rgba(*to), a, b)));
+                        } else {
+                            let col = rgba(*from);
+                            let mut mesh = egui::Mesh::default();
+                            for &ptv in &v {
+                                mesh.colored_vertex(ptv, col);
+                            }
+                            let n = v.len();
+                            let half = n / 2;
+                            for i in 0..half.saturating_sub(1) {
+                                let (t0, t1) = (i as u32, (i + 1) as u32);
+                                let (b0, b1) = ((n - 1 - i) as u32, (n - 2 - i) as u32);
+                                mesh.add_triangle(t0, b0, t1);
+                                mesh.add_triangle(t1, b0, b1);
+                            }
+                            p.add(egui::Shape::mesh(mesh));
+                        }
+                    }
+                    Some(Fill::Solid(c)) => {
+                        let col = rgba(*c);
+                        if is_convex(&v) {
+                            p.add(PathShape { points: v.clone(), closed: true, fill: col, stroke: PathStroke::NONE });
+                        } else {
+                            p.add(egui::Shape::mesh(area_mesh(&v, col)));
+                        }
+                    }
+                    None => {}
                 }
                 if let Some((c, w)) = stroke {
                     p.add(PathShape::closed_line(v, PathStroke::new(w * z.max(0.5), rgba(*c))));
@@ -190,18 +243,48 @@ pub fn paint_prims(p: &Painter, origin: Pos2, prims: &[Prim], z: f32) {
                 let c = pt(*cx, *cy);
                 let steps = (((a1 - a0).abs() / 0.05).ceil() as usize).clamp(2, 400);
                 let at = |a: f32, r: f32| pos2(c.x + r * z * a.sin(), c.y - r * z * a.cos());
+                let ramp = match fill {
+                    Some(Fill::Linear { from, to, start, end }) => {
+                        let (sa, sb) = (pt(start[0], start[1]), pt(end[0], end[1]));
+                        let len_sq = (sb - sa).length_sq();
+                        if len_sq.is_finite() && len_sq > MIN_RAMP_SPAN {
+                            Some((rgba(*from), rgba(*to), sa, sb))
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                };
+                let flat = match fill {
+                    Some(Fill::Linear { from, .. }) if ramp.is_none() => rgba(*from),
+                    Some(Fill::Solid(sc)) => rgba(*sc),
+                    Some(Fill::Linear { from, .. }) => rgba(*from),
+                    None => Color32::TRANSPARENT,
+                };
                 let mut mesh = egui::Mesh::default();
-                // A ramp paints flat per vertex in M3.6; until then the near stop drives the mesh.
-                let col = fill.map_or(Color32::TRANSPARENT, |f| rgba(f.start()));
                 for i in 0..=steps {
-                    let a = a0 + (a1 - a0) * i as f32 / steps as f32;
-                    mesh.colored_vertex(at(a, *r_outer), col);
-                    mesh.colored_vertex(if *r_inner > 0.0 { at(a, *r_inner) } else { c }, col);
+                    let ang = a0 + (a1 - a0) * i as f32 / steps as f32;
+                    let outer = at(ang, *r_outer);
+                    let inner = if *r_inner > 0.0 { at(ang, *r_inner) } else { c };
+                    let (oc, ic) = if let Some((from, to, sa, sb)) = ramp {
+                        let d = sb - sa;
+                        let len_sq = d.length_sq();
+                        let colour_at = |p: Pos2| {
+                            let off = p - sa;
+                            let t = if len_sq > 0.0 && len_sq.is_finite() { ((off.x * d.x + off.y * d.y) / len_sq).clamp(0.0, 1.0) } else { 0.0 };
+                            ramp_colour(from, to, t)
+                        };
+                        (colour_at(outer), colour_at(inner))
+                    } else {
+                        (flat, flat)
+                    };
+                    mesh.colored_vertex(outer, oc);
+                    mesh.colored_vertex(inner, ic);
                 }
                 for i in 0..steps as u32 {
-                    let b = i * 2;
-                    mesh.add_triangle(b, b + 1, b + 2);
-                    mesh.add_triangle(b + 1, b + 3, b + 2);
+                    let bi = i * 2;
+                    mesh.add_triangle(bi, bi + 1, bi + 2);
+                    mesh.add_triangle(bi + 1, bi + 3, bi + 2);
                 }
                 p.add(egui::Shape::mesh(mesh));
                 if let Some((sc, w)) = stroke {
@@ -943,5 +1026,68 @@ pub(crate) mod tests {
         assert_eq!(colours.last(), Some(&rgba(fixture::TO)), "the far stop is exact");
         assert_eq!(rings.len(), 5, "one ring per marker hull, got {rings:?}");
         assert!(rings.iter().all(|c| *c == rgba(fixture::RING)), "every ring is the ring colour, got {rings:?}");
+    }
+    /// M3.6: a linear ramp on a polygon and a wedge reaches the egui mesh per vertex (solid shapes
+    /// keep their flat fast path).
+    #[test]
+    fn a_gradient_polygon_and_wedge_keep_vertex_colours_in_the_egui_mesh() {
+        use gridcraft_chart::Fill;
+
+        let from = [200u8, 10, 10, 255];
+        let to = [10u8, 10, 200, 255];
+        let ramp = Fill::Linear { from, to, start: [0.0, 20.0], end: [40.0, 20.0] };
+
+        let polygon = vec![Prim::Polygon {
+            pts: vec![[0.0, 0.0], [40.0, 0.0], [40.0, 40.0], [0.0, 40.0]],
+            fill: Some(ramp),
+            stroke: None,
+        }];
+        let wedge = vec![Prim::Wedge {
+            cx: 20.0,
+            cy: 20.0,
+            r_outer: 20.0,
+            r_inner: 8.0,
+            a0: -std::f32::consts::FRAC_PI_2,
+            a1: std::f32::consts::FRAC_PI_2,
+            fill: Some(Fill::Linear { from, to, start: [0.0, 20.0], end: [40.0, 20.0] }),
+            stroke: None,
+        }];
+
+        let ctx = egui::Context::default();
+        let mut out_poly = ctx.run_ui(Default::default(), |ui| paint_prims(ui.painter(), pos2(0.0, 0.0), &polygon, 1.0));
+        let poly_cols = mesh_colours(&out_poly);
+        out_poly.textures_delta.clear();
+        assert!(poly_cols.contains(&rgba(from)), "convex gradient polygon keeps the near stop");
+        assert!(poly_cols.contains(&rgba(to)), "convex gradient polygon keeps the far stop");
+        assert!(poly_cols.iter().any(|c| *c != rgba(from) && *c != rgba(to)) || poly_cols.iter().any(|c| *c != poly_cols[0]),
+            "convex gradient polygon is not flat: {poly_cols:?}");
+
+        let concave = vec![Prim::Polygon {
+            pts: vec![[0.0, 0.0], [40.0, 0.0], [20.0, 20.0], [40.0, 40.0], [0.0, 40.0]],
+            fill: Some(ramp),
+            stroke: None,
+        }];
+        let mut out_concave = ctx.run_ui(Default::default(), |ui| paint_prims(ui.painter(), pos2(0.0, 0.0), &concave, 1.0));
+        let concave_meshes = out_concave.shapes.iter().filter(|cs| matches!(cs.shape, egui::Shape::Mesh(_))).count();
+        let concave_cols = mesh_colours(&out_concave);
+        out_concave.textures_delta.clear();
+        assert!(concave_meshes >= 1, "concave gradient polygon uses the mesh path");
+        assert!(concave_cols.contains(&rgba(from)) && concave_cols.contains(&rgba(to)), "concave gradient polygon keeps both stops");
+
+        let mut out_wedge = ctx.run_ui(Default::default(), |ui| paint_prims(ui.painter(), pos2(0.0, 0.0), &wedge, 1.0));
+        let wedge_cols = mesh_colours(&out_wedge);
+        out_wedge.textures_delta.clear();
+        assert!(wedge_cols.contains(&rgba(from)) && wedge_cols.contains(&rgba(to)), "gradient wedge keeps both stops");
+        assert!(wedge_cols.iter().any(|c| *c != wedge_cols[0]), "gradient wedge is not flat: {wedge_cols:?}");
+
+        let degenerate = vec![Prim::Polygon {
+            pts: vec![[0.0, 0.0], [40.0, 0.0], [40.0, 40.0], [0.0, 40.0]],
+            fill: Some(Fill::Linear { from, to, start: [10.0, 10.0], end: [10.0, 10.0] }),
+            stroke: None,
+        }];
+        let mut out_deg = ctx.run_ui(Default::default(), |ui| paint_prims(ui.painter(), pos2(0.0, 0.0), &degenerate, 1.0));
+        let deg_cols = mesh_colours(&out_deg);
+        out_deg.textures_delta.clear();
+        assert!(!deg_cols.is_empty() && deg_cols.iter().all(|c| *c == rgba(from)), "a degenerate ramp paints flat in the near stop: {deg_cols:?}");
     }
 }

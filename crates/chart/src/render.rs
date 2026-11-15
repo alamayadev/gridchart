@@ -41,7 +41,6 @@ pub(crate) const DOWN: Rgba = [0xD6, 0x4F, 0x45, 0xFF];
 /// [`WHITE`]; other presets resolve their own ring and seam through the style tokens.
 pub(crate) const MARKER_RING_WEIGHT: f32 = 0.75;
 
-const TITLE_SIZE: f32 = 14.0;
 const LABEL_SIZE: f32 = 9.0;
 /// Most categories drawn by category-axis charts.
 const MAX_CATS: usize = 20_000;
@@ -257,7 +256,7 @@ pub fn render(chart: &Chart, data: &ChartData, w: f32, h: f32, m: &dyn Measure) 
     let pad = (w.min(h) * 0.04).clamp(2.0, 10.0);
     let mut area = Bx { x: pad, y: pad, w: w - 2.0 * pad, h: h - 2.0 * pad };
     if let Some(t) = chart_title(chart, &data) {
-        let size = TITLE_SIZE.min(h * 0.12).max(4.0);
+        let size = ctx.style.type_scale.title.min(h * 0.12).max(4.0);
         let t = ctx.fit(&t, size, area.w);
         ctx.text(w / 2.0, area.y, &t, size, ctx.style.text, (HAlign::Center, VAlign::Top));
         let used = size * 1.3 + 4.0;
