@@ -173,7 +173,13 @@ pub(super) fn draw_prims(pg: &mut Page, prims: &[gridcraft_chart::Prim], xf: Xf)
                 pg.polyline(&xf.pts(pts), (width * k).max(0.1), blend_over(*color, bg), &d);
             }
             Prim::Polygon { pts, fill, stroke } => {
-                pg.polygon(&xf.pts(pts), Some(blend_over(*fill, bg)), stroke.map(|(c, w)| (blend_over(c, bg), (w * k).max(0.1))));
+                // A ramp paints its near stop flat here until the polygon clip lands (M3.5);
+                // a solid fill paints exactly as before.
+                pg.polygon(
+                    &xf.pts(pts),
+                    fill.map(|f| blend_over(f.start(), bg)),
+                    stroke.map(|(c, w)| (blend_over(c, bg), (w * k).max(0.1))),
+                );
             }
             Prim::Wedge { cx, cy, r_outer, r_inner, a0, a1, fill, stroke } => {
                 let span = (a1 - a0).abs().min(std::f32::consts::TAU);
@@ -185,7 +191,11 @@ pub(super) fn draw_prims(pg: &mut Page, prims: &[gridcraft_chart::Prim], xf: Xf)
                 } else {
                     pts.push([*cx, *cy]);
                 }
-                pg.polygon(&xf.pts(&pts), Some(blend_over(*fill, bg)), stroke.map(|(c, w)| (blend_over(c, bg), (w * k).max(0.1))));
+                pg.polygon(
+                    &xf.pts(&pts),
+                    fill.map(|f| blend_over(f.start(), bg)),
+                    stroke.map(|(c, w)| (blend_over(c, bg), (w * k).max(0.1))),
+                );
             }
             Prim::Circle { cx, cy, r, fill, stroke } => {
                 let (px, py) = xf.p(*cx, *cy);

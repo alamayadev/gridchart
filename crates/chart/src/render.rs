@@ -43,7 +43,6 @@ pub(crate) const MARKER_RING_WEIGHT: f32 = 0.75;
 
 const TITLE_SIZE: f32 = 14.0;
 const LABEL_SIZE: f32 = 9.0;
-const AXIS_TITLE_SIZE: f32 = 10.0;
 /// Most categories drawn by category-axis charts.
 const MAX_CATS: usize = 20_000;
 /// Lines with more points than this are decimated (min/max per pixel column).
@@ -338,6 +337,7 @@ pub(crate) fn finalize(prims: Vec<Prim>, w: f32, h: f32) -> Vec<Prim> {
                     return None;
                 }
                 let pts = pts.into_iter().map(|p| [cx(p[0]), cy(p[1])]).collect();
+                let fill = clamp_fill(fill);
                 Some(Prim::Polygon { pts, fill, stroke: clamp_stroke(stroke) })
             }
             Prim::Wedge { cx: x, cy: y, r_outer, r_inner, a0, a1, fill, stroke } => {
@@ -350,6 +350,7 @@ pub(crate) fn finalize(prims: Vec<Prim>, w: f32, h: f32) -> Vec<Prim> {
                 if ro <= 0.0 {
                     return None;
                 }
+                let fill = clamp_fill(fill);
                 Some(Prim::Wedge { cx: x, cy: y, r_outer: ro, r_inner: r_inner.clamp(0.0, ro), a0, a1, fill, stroke: clamp_stroke(stroke) })
             }
             Prim::Circle { cx: x, cy: y, r, fill, stroke } => {

@@ -445,7 +445,7 @@ pub(super) fn cartesian(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx
                     }
                     let poly = decimate_area(top, base, MAX_LINE_PTS * 2);
                     if poly.len() >= 3 {
-                        ctx.out.push(Prim::Polygon { pts: poly, fill: s.color, stroke: None });
+                        ctx.out.push(Prim::Polygon { pts: poly, fill: Some(Fill::solid(s.color)), stroke: None });
                     }
                 }
                 1 => {

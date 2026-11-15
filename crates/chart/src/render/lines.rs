@@ -223,7 +223,7 @@ pub(super) fn draw_markers(ctx: &mut Ctx, pts: impl Iterator<Item = [f32; 2]>, r
                     ctx.out.push(Prim::Circle { cx: p[0], cy: p[1], r, fill: Some(color), stroke: ring });
                 }
                 MarkerGeometry::Polygon(pts) => {
-                    ctx.out.push(Prim::Polygon { pts, fill: color, stroke: ring });
+                    ctx.out.push(Prim::Polygon { pts, fill: Some(super::Fill::solid(color)), stroke: ring });
                 }
             }
         }

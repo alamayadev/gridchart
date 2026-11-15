@@ -411,7 +411,7 @@ fn slice_crossing_twelve_has_no_internal_seam() {
     let mut r = 0.0;
     for p in &prims {
         if let Prim::Wedge { cx: x, cy: y, r_outer, a0, a1, fill, stroke, .. } = p
-            && *fill == b
+            && *fill == Some(Fill::solid(b))
         {
             assert!(stroke.is_none(), "a split half must not stroke its shared edge: {p:?}");
             assert!(*a0 == 0.0 || *a1 == TAU, "the crossing slice is split at 12 o'clock: {p:?}");
@@ -456,7 +456,7 @@ fn doughnut_legend_names_categories_and_matches_every_ring() {
         rings.push(*r_outer);
         let rel = ((a0 + a1) / 2.0 - start).rem_euclid(std::f32::consts::TAU);
         let cat = ((rel / (std::f32::consts::TAU / 4.0)) as usize).min(3);
-        assert_eq!(*fill, entries[cat].1, "ring wedge at {a0}..{a1} does not match legend entry {}", entries[cat].0);
+        assert_eq!(fill.and_then(|f| match f { Fill::Solid(c) => Some(c), Fill::Linear { .. } => None }), Some(entries[cat].1), "ring wedge at {a0}..{a1} does not match legend entry {}", entries[cat].0);
     }
     rings.sort_by(f32::total_cmp);
     rings.dedup();
@@ -807,7 +807,7 @@ fn rasterize_bar_center_has_bar_color() {
         r_inner: 20.0,
         a0: 0.0,
         a1: std::f32::consts::FRAC_PI_2,
-        fill: [0, 0, 255, 255],
+        fill: Some(Fill::solid([0, 0, 255, 255])),
         stroke: None,
     };
     let img = rasterize(&[wedge], 100, 100, [255, 255, 255, 255]);
@@ -1458,7 +1458,7 @@ fn pie_points_follow_the_chart_preset() {
     let fills: Vec<Rgba> = render(&c, &d, 480.0, 288.0, &ApproxMeasure)
         .iter()
         .filter_map(|p| match p {
-            Prim::Wedge { fill, .. } => Some(*fill),
+            Prim::Wedge { fill, .. } => fill.and_then(|f| match f { Fill::Solid(c) => Some(c), Fill::Linear { .. } => None }),
             _ => None,
         })
         .collect();
@@ -1961,6 +1961,56 @@ fn precision_is_exact_at_the_endpoints_and_midpoint_rounds_deterministically() {
     let out = only_rect(rect_of(None, [4.55; 4], 9.10, 9.10), 9.10, 9.10);
     let r = radii_of(&out)[0];
     assert_eq!(r.to_bits(), 4.55f32.to_bits(), "a radius on the bound clamps exactly, got {r}");
+}
+
+/// 03-01-02: a `Polygon` and a `Wedge` carry paint and degrade exactly like a `Rect` — a
+/// degenerate ramp becomes the solid `from` stop, never a dropped or hollow shape.
+#[test]
+fn a_polygon_and_a_wedge_carry_paint_and_degrade_like_a_rect() {
+    let zero_span = Prim::Polygon {
+        pts: vec![[10.0, 10.0], [60.0, 10.0], [60.0, 60.0], [10.0, 60.0]],
+        fill: Some(Fill::Linear { from: [10, 20, 30, 255], to: [40, 50, 60, 128], start: [0.0, 0.0], end: [0.0, 0.0] }),
+        stroke: None,
+    };
+    let out = crate::render::finalize(vec![zero_span], 100.0, 100.0);
+    assert_eq!(out.len(), 1, "a bad payload degrades, only absent geometry is dropped");
+    match &out[0] {
+        Prim::Polygon { fill, .. } => {
+            assert_eq!(*fill, Some(Fill::Solid([10, 20, 30, 255])), "a zero-span polygon ramp collapses to its start colour");
+        }
+        other => panic!("expected a polygon, got {other:?}"),
+    }
+
+    let nan_axis = Prim::Wedge {
+        cx: 50.0,
+        cy: 50.0,
+        r_outer: 30.0,
+        r_inner: 10.0,
+        a0: 0.0,
+        a1: 1.0,
+        fill: Some(Fill::Linear { from: [7, 8, 9, 255], to: [1, 2, 3, 255], start: [f32::NAN, 0.0], end: [1.0, 1.0] }),
+        stroke: None,
+    };
+    let out = crate::render::finalize(vec![nan_axis], 100.0, 100.0);
+    assert_eq!(out.len(), 1, "a bad payload degrades, only absent geometry is dropped");
+    match &out[0] {
+        Prim::Wedge { fill, .. } => {
+            assert_eq!(*fill, Some(Fill::Solid([7, 8, 9, 255])), "a non-finite wedge ramp collapses to its start colour");
+        }
+        other => panic!("expected a wedge, got {other:?}"),
+    }
+
+    let square = vec![[10.0, 10.0], [60.0, 10.0], [60.0, 60.0], [10.0, 60.0]];
+    let solid = Prim::Polygon { pts: square.clone(), fill: Some(Fill::Solid([1, 2, 3, 255])), stroke: None };
+    let out = crate::render::finalize(vec![solid], 100.0, 100.0);
+    assert_eq!(out, vec![Prim::Polygon { pts: square.clone(), fill: Some(Fill::Solid([1, 2, 3, 255])), stroke: None }], "a solid polygon round-trips unchanged");
+
+    let outline = Prim::Polygon { pts: square.clone(), fill: None, stroke: Some(([0, 0, 0, 255], 1.0)) };
+    let out = crate::render::finalize(vec![outline], 100.0, 100.0);
+    match &out[0] {
+        Prim::Polygon { fill, .. } => assert!(fill.is_none(), "an unfilled polygon keeps drawing only its stroke"),
+        other => panic!("expected a polygon, got {other:?}"),
+    }
 }
 
 // ---------------------------------------------------------------- bar tips, ramps and markers (02-01-03)

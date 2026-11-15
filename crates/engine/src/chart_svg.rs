@@ -91,12 +91,12 @@ fn prims_svg_within(prims: &[Prim], w: f32, h: f32, style: &str, budget: usize) 
             }
             Prim::Polygon { pts, fill, stroke } => {
                 let _ = write!(out, "<polygon points=\"{}\"", points(pts));
-                paint(&mut out, Some(Fill::solid(*fill)), None, *stroke);
+                paint(&mut out, *fill, None, *stroke);
                 out.push_str("/>");
             }
             Prim::Wedge { cx, cy, r_outer, r_inner, a0, a1, fill, stroke } => {
                 let _ = write!(out, "<path d=\"{}\"", wedge_path(*cx, *cy, *r_outer, *r_inner, *a0, *a1));
-                paint(&mut out, Some(Fill::solid(*fill)), None, *stroke);
+                paint(&mut out, *fill, None, *stroke);
                 out.push_str("/>");
             }
             Prim::Circle { cx, cy, r, fill, stroke } => {
@@ -299,8 +299,8 @@ mod tests {
         let prims = vec![
             Prim::Rect { x: 1.0, y: 2.0, w: 3.0, h: 4.0, fill: Some(Fill::solid(red)), stroke: None, radii: [0.0; 4] },
             Prim::Line { pts: vec![[0.0, 0.0], [5.0, 5.5]], color: red, width: 1.0, dash: true },
-            Prim::Polygon { pts: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], fill: red, stroke: Some(([0, 0, 0, 255], 1.0)) },
-            Prim::Wedge { cx: 10.0, cy: 10.0, r_outer: 5.0, r_inner: 2.0, a0: 0.0, a1: 1.0, fill: red, stroke: None },
+            Prim::Polygon { pts: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], fill: Some(Fill::solid(red)), stroke: Some(([0, 0, 0, 255], 1.0)) },
+            Prim::Wedge { cx: 10.0, cy: 10.0, r_outer: 5.0, r_inner: 2.0, a0: 0.0, a1: 1.0, fill: Some(Fill::solid(red)), stroke: None },
             Prim::Circle { cx: 1.0, cy: 1.0, r: 2.0, fill: Some([0, 0, 255, 128]), stroke: None },
             Prim::Text {
                 x: 5.0,

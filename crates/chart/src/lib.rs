@@ -1,4 +1,4 @@
-﻿//! GridCraft charts (layer L3, toolkit-free).
+//! GridCraft charts (layer L3, toolkit-free).
 //!
 //! - [`resolve`] pulls series names, categories and values out of a workbook,
 //! - [`render`] lays a chart out into a list of drawing primitives ([`Prim`]) that any UI
@@ -105,7 +105,8 @@ pub enum Prim {
     },
     Polygon {
         pts: Vec<[f32; 2]>,
-        fill: Rgba,
+        /// Fill paint: solid or a two-stop ramp in chart coordinates, same space as the geometry.
+        fill: Paint,
         stroke: Option<(Rgba, f32)>,
     },
     /// Pie/doughnut sector: centre, radii, angles in radians (0 = 12 o'clock, clockwise).
@@ -116,7 +117,8 @@ pub enum Prim {
         r_inner: f32,
         a0: f32,
         a1: f32,
-        fill: Rgba,
+        /// Fill paint: solid or a two-stop ramp in chart coordinates, same space as the geometry.
+        fill: Paint,
         stroke: Option<(Rgba, f32)>,
     },
     Circle {

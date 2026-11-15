@@ -1,4 +1,4 @@
-﻿use super::frame::{Bx, CatAxis, ValAxis, frame, on, value_range};
+use super::frame::{Bx, CatAxis, ValAxis, frame, on, value_range};
 use super::legend::{cat_label, point_color};
 use super::{
     Chart, ChartData, Ctx, DOWN, Fmt, HAlign, LABEL_SIZE, MAX_CATS, MAX_LABELS, MAX_MARKERS, MAX_SERIES, MAX_WEDGES, Prim, QuartileMethod, Rgba,
@@ -196,13 +196,13 @@ fn wedge(ctx: &mut Ctx, ring: &Ring, a0: f32, sweep: f32, fill: Rgba) {
     let a0 = a0.rem_euclid(TAU);
     let a1 = a0 + sweep;
     if a1 <= TAU {
-        ctx.out.push(Prim::Wedge { cx, cy, r_outer: outer, r_inner: inner, a0, a1, fill, stroke });
+        ctx.out.push(Prim::Wedge { cx, cy, r_outer: outer, r_inner: inner, a0, a1, fill: Some(super::Fill::solid(fill)), stroke });
         return;
     }
     // The halves are filled without a stroke: each would outline its own radial edge at 12
     // o'clock, painting the white separator straight through the slice.
-    ctx.out.push(Prim::Wedge { cx, cy, r_outer: outer, r_inner: inner, a0, a1: TAU, fill, stroke: None });
-    ctx.out.push(Prim::Wedge { cx, cy, r_outer: outer, r_inner: inner, a0: 0.0, a1: a1 - TAU, fill, stroke: None });
+    ctx.out.push(Prim::Wedge { cx, cy, r_outer: outer, r_inner: inner, a0, a1: TAU, fill: Some(super::Fill::solid(fill)), stroke: None });
+    ctx.out.push(Prim::Wedge { cx, cy, r_outer: outer, r_inner: inner, a0: 0.0, a1: a1 - TAU, fill: Some(super::Fill::solid(fill)), stroke: None });
     if let Some((color, width)) = stroke {
         // One outline for the whole slice: the outer and inner arcs run through 12 o'clock, and
         // the two radial edges at the slice's own start and end close the path.

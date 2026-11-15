@@ -85,7 +85,7 @@ fn rect(x: f32, y: f32, w: f32, h: f32, fill: Fill, radii: [f32; 4]) -> Prim {
 fn marker(shape: MarkerShape, cx: f32) -> Prim {
     match geometry(shape, cx, MARKER_Y, MARKER_RADIUS) {
         MarkerGeometry::Circle { r } => Prim::Circle { cx, cy: MARKER_Y, r, fill: Some(MARKER_FILL), stroke: Some((RING, RING_WEIGHT)) },
-        MarkerGeometry::Polygon(pts) => Prim::Polygon { pts, fill: MARKER_FILL, stroke: Some((RING, RING_WEIGHT)) },
+        MarkerGeometry::Polygon(pts) => Prim::Polygon { pts, fill: Some(Fill::solid(MARKER_FILL)), stroke: Some((RING, RING_WEIGHT)) },
     }
 }
 

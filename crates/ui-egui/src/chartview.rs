@@ -173,13 +173,14 @@ pub fn paint_prims(p: &Painter, origin: Pos2, prims: &[Prim], z: f32) {
                 if v.len() < 3 {
                     continue;
                 }
-                // Polygons may be concave (areas): triangulate as a fan from the first point
-                // when convex, else draw through a mesh of the closed path.
-                let shape = PathShape { points: v.clone(), closed: true, fill: rgba(*fill), stroke: PathStroke::NONE };
+                // A ramp paints flat here until the per-vertex mesh lands (M3.6); a solid fill
+                // paints exactly as before, and an unfilled polygon draws only its stroke.
+                let col = fill.map_or(Color32::TRANSPARENT, |f| rgba(f.start()));
+                let shape = PathShape { points: v.clone(), closed: true, fill: col, stroke: PathStroke::NONE };
                 if is_convex(&v) {
                     p.add(shape);
                 } else {
-                    p.add(egui::Shape::mesh(area_mesh(&v, rgba(*fill))));
+                    p.add(egui::Shape::mesh(area_mesh(&v, col)));
                 }
                 if let Some((c, w)) = stroke {
                     p.add(PathShape::closed_line(v, PathStroke::new(w * z.max(0.5), rgba(*c))));
@@ -190,7 +191,8 @@ pub fn paint_prims(p: &Painter, origin: Pos2, prims: &[Prim], z: f32) {
                 let steps = (((a1 - a0).abs() / 0.05).ceil() as usize).clamp(2, 400);
                 let at = |a: f32, r: f32| pos2(c.x + r * z * a.sin(), c.y - r * z * a.cos());
                 let mut mesh = egui::Mesh::default();
-                let col = rgba(*fill);
+                // A ramp paints flat per vertex in M3.6; until then the near stop drives the mesh.
+                let col = fill.map_or(Color32::TRANSPARENT, |f| rgba(f.start()));
                 for i in 0..=steps {
                     let a = a0 + (a1 - a0) * i as f32 / steps as f32;
                     mesh.colored_vertex(at(a, *r_outer), col);

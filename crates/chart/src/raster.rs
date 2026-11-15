@@ -333,7 +333,9 @@ pub fn rasterize(prims: &[Prim], w: u32, h: u32, background: Rgba) -> Vec<u8> {
                 }
             }
             Prim::Polygon { pts, fill, stroke } => {
-                cv.fill(&vec![pts.clone()], Fill::solid(*fill));
+                if let Some(f) = fill {
+                    cv.fill(&vec![pts.clone()], *f);
+                }
                 if let Some((c, sw)) = stroke {
                     for path in stroke_paths(pts, *sw, false, true) {
                         cv.fill(&path, Fill::solid(*c));
@@ -349,7 +351,9 @@ pub fn rasterize(prims: &[Prim], w: u32, h: u32, background: Rgba) -> Vec<u8> {
                 } else {
                     c.push([*cx, *cy]);
                 }
-                cv.fill(&vec![c.clone()], Fill::solid(*fill));
+                if let Some(f) = fill {
+                    cv.fill(&vec![c.clone()], *f);
+                }
                 if let Some((sc, sw)) = stroke {
                     for path in stroke_paths(&c, *sw, false, true) {
                         cv.fill(&path, Fill::solid(*sc));
@@ -382,7 +386,7 @@ mod tests {
         let mut pts: Vec<[f32; 2]> = (0..100_000).map(|i| [if i % 2 == 0 { 0.0 } else { 0.5 }, i as f32 * 0.04]).collect();
         pts.push([2.0, 4_000.0]);
         pts.push([2.0, 0.0]);
-        let img = rasterize(&[Prim::Polygon { pts, fill: [255, 0, 0, 255], stroke: None }], 2, 4_000, [0, 0, 0, 0]);
+        let img = rasterize(&[Prim::Polygon { pts, fill: Some(Fill::solid([255, 0, 0, 255])), stroke: None }], 2, 4_000, [0, 0, 0, 0]);
         // The right-hand pixel of every row is inside the polygon.
         assert_eq!(img.get(4..8), Some(&[255, 0, 0, 255][..]));
         assert_eq!(img.get(4 * (2 * 3_999 + 1)..4 * (2 * 3_999 + 2)), Some(&[255, 0, 0, 255][..]));

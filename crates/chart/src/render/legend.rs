@@ -98,7 +98,7 @@ pub(super) fn swatch_w(sw: Swatch, s: f32) -> f32 {
 fn draw_marker(ctx: &mut Ctx, cx: f32, cy: f32, r: f32, color: Rgba) {
     match shape::geometry(MarkerShape::Circle, cx, cy, r) {
         MarkerGeometry::Circle { r } => ctx.out.push(Prim::Circle { cx, cy, r, fill: Some(color), stroke: None }),
-        MarkerGeometry::Polygon(pts) => ctx.out.push(Prim::Polygon { pts, fill: color, stroke: None }),
+        MarkerGeometry::Polygon(pts) => ctx.out.push(Prim::Polygon { pts, fill: Some(super::Fill::solid(color)), stroke: None }),
     }
 }
 
