@@ -526,7 +526,7 @@ fn pie_labels_that_do_not_fit_inside_step_outside_with_a_leader() {
         category_levels: vec![],
         palette: palette.clone(),
         categories: (0..10).map(|j| format!("C{j}")).collect(),
-        series: vec![series("Only", &[100.0; 9].iter().chain([&0.4]).copied().collect::<Vec<f64>>().as_slice(), palette[0], ChartKind::Pie)],
+        series: vec![series("Only", [100.0; 9].iter().chain([&0.4]).copied().collect::<Vec<f64>>().as_slice(), palette[0], ChartKind::Pie)],
     };
     let mut c = chart(ChartKind::Pie);
     c.title = None;
@@ -602,7 +602,6 @@ fn pie_labels_keep_their_inside_placement() {
         let luma = 0.299 * fill[0] as f32 + 0.587 * fill[1] as f32 + 0.114 * fill[2] as f32;
         if luma < 150.0 { [0xFF; 4] } else { [0x26, 0x26, 0x26, 0xFF] }
     };
-    let mut a = 0.0f32;
     for p in &prims {
         if let Prim::Wedge { a0, a1, fill, .. } = p {
             let mid = (a0 + a1) / 2.0;
@@ -625,7 +624,6 @@ fn pie_labels_keep_their_inside_placement() {
                 && *color == ink(fill) && *align == HAlign::Center)
             });
             assert!(hit, "slice at {a0}..{a1} keeps its inside anchor");
-            a = *a1;
         }
     }
 }
@@ -640,7 +638,7 @@ fn doughnut_single_ring_labels_small_slices_outside() {
         categories: (0..10).map(|j| format!("C{j}")).collect(),
         series: vec![series(
             "Only",
-            &[100.0; 9].iter().chain([&0.4]).copied().collect::<Vec<f64>>().as_slice(),
+            [100.0; 9].iter().chain([&0.4]).copied().collect::<Vec<f64>>().as_slice(),
             [20, 96, 130, 255],
             ChartKind::Doughnut,
         )],
@@ -759,6 +757,65 @@ fn a_zero_value_slice_gets_neither_label_nor_leader() {
         .collect();
     // The series number format is "$#,##0" (sample()'s), so a zero label would read "$0".
     assert_eq!(texts.iter().filter(|t| t.as_str() == "$0").count(), 0, "no label for the zero slice: {texts:?}");
+}
+
+/// A measure wider than `ApproxMeasure` — the UI and SVG measures are not the test measure — must
+/// not push a label or a leader outside the card, even in a small chart.
+struct WideMeasure;
+
+impl Measure for WideMeasure {
+    fn text_width(&self, s: &str, size: f32, _bold: bool) -> f32 {
+        s.chars().count() as f32 * size * 1.15
+    }
+}
+
+#[test]
+fn outside_labels_and_leaders_stay_inside_a_small_chart() {
+    let d = ChartData {
+        category_levels: vec![],
+        palette: (0..12).map(|j| [(20 + j as u8 * 17), 96, 130, 255]).collect(),
+        categories: (0..12).map(|j| format!("Slice {j}")).collect(),
+        series: vec![series("Only", [100.0; 11].iter().chain([&0.4]).copied().collect::<Vec<f64>>().as_slice(), [20, 96, 130, 255], ChartKind::Pie)],
+    };
+    let mut c = chart(ChartKind::Pie);
+    c.title = None;
+    c.legend = LegendPos::None;
+    let (w, h) = (320.0f32, 220.0f32);
+    let prims = render(&c, &d, w, h, &WideMeasure);
+    let ink = chart_style(0).text;
+    let mut leaders = 0;
+    for p in &prims {
+        if let Prim::Line { pts, color, width, .. } = p {
+            if *color == ink && (*width - 1.0).abs() < 1e-6 {
+                assert_eq!(pts.len(), 3, "a leader is exactly three points");
+                leaders += 1;
+            }
+            for q in pts {
+                assert!(q[0] >= -0.01 && q[0] <= w + 0.01 && q[1] >= -0.01 && q[1] <= h + 0.01, "line point {q:?} escapes the box");
+            }
+        }
+        if let Prim::Text { x, y, text, .. } = p {
+            assert!(*x >= -0.01 && *x <= w + 0.01 && *y >= -0.01 && *y <= h + 0.01, "label anchor ({x}, {y}) escapes the box");
+            assert!(!text.is_empty(), "no empty label text");
+        }
+    }
+    assert!(leaders > 0, "the hairline slice still gets its leader under the wide measure");
+}
+
+#[test]
+fn outside_label_placement_is_deterministic() {
+    let d = ChartData {
+        category_levels: vec![],
+        palette: (0..12).map(|j| [(20 + j as u8 * 17), 96, 130, 255]).collect(),
+        categories: (0..12).map(|j| format!("Slice {j}")).collect(),
+        series: vec![series("Only", [100.0; 11].iter().chain([&0.4]).copied().collect::<Vec<f64>>().as_slice(), [20, 96, 130, 255], ChartKind::Pie)],
+    };
+    let mut c = chart(ChartKind::Pie);
+    c.title = None;
+    c.legend = LegendPos::None;
+    let a = render(&c, &d, 320.0, 220.0, &WideMeasure);
+    let b = render(&c, &d, 320.0, 220.0, &WideMeasure);
+    assert_eq!(format!("{a:?}"), format!("{b:?}"), "two renders of the same chart are byte-identical");
 }
 
 #[test]

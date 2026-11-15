@@ -274,10 +274,17 @@ fn slice_label(ctx: &Ctx, area: Bx, s: Slice, allow_outside: bool) -> Option<Sli
     let ly = ey0.clamp(area.y + 2.0, area.bottom() - 2.0);
     let ex = if right { lx + 8.0 } else { lx - 8.0 };
     let ex = ex.clamp(area.x + 2.0, area.right() - 2.0);
+    // The label must fit the run between its anchor and the box edge on its side; when even the
+    // ellipsised text is empty, the label — and its leader — are dropped rather than spilling.
+    let run = if right { area.right() - 2.0 - ex } else { ex - (area.x + 2.0) };
+    let text = ctx.fit(&s.text, LABEL_SIZE, run.max(0.0));
+    if text.is_empty() {
+        return None;
+    }
     Some(SliceLabel {
         x: ex,
         y: ly,
-        text: s.text,
+        text,
         ink: ctx.style.text,
         align: if right { HAlign::Left } else { HAlign::Right },
         leader: Some(vec![[ax, ay], [lx, ly], [ex, ly]]),
