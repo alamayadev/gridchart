@@ -903,6 +903,8 @@ fn every_draw_method_survives_hostile_numbers() -> Result<(), Box<dyn Error>> {
     for &a in &bad {
         for &b in &bad {
             p.clip_rect(a, b, a, b);
+            p.clip_rounded_rect(a, b, a, b, [a, b, b, a]);
+            let _ = p.clip_polygon(&[[a, b], [b, a], [1.0, 1.0]]);
             p.fill_rect(a, b, b, a, [1, 2, 3]);
             p.rect_stroke(a, b, a, b, a, [1, 2, 3]);
             p.stroke_line(a, b, b, a, a, [1, 2, 3]);
@@ -966,6 +968,26 @@ fn info_strings_are_capped() -> Result<(), Box<dyn Error>> {
     doc.info.title = "日".repeat(100_000);
     let pdf = doc.finish();
     assert_eq!(utf16_entry(&pdf, "/Title")?.chars().count(), MAX_INFO_CHARS);
+    Ok(())
+}
+
+#[test]
+fn a_polygon_clip_writes_a_closed_path_or_nothing() -> Result<(), Box<dyn Error>> {
+    let mut d = PdfDoc::new();
+    let p = d.add_page(100.0, 100.0);
+    p.save();
+    assert!(p.clip_polygon(&[[10.0, 10.0], [90.0, 10.0], [50.0, 90.0]]));
+    p.fill_rect(0.0, 0.0, 100.0, 100.0, [10, 20, 30]);
+    p.restore();
+    p.save();
+    assert!(!p.clip_polygon(&[[10.0, 10.0], [90.0, 10.0]]));
+    p.restore();
+    let pdf = d.finish();
+    check_xref(&pdf)?;
+    let (_, pages) = parse_pages(&pdf);
+    let content = &pages[0].content;
+    assert!(content.contains(" W n"), "clip operator written: {content}");
+    assert!(content.contains("10 90 m"), "polygon path starts in PDF space: {content}");
     Ok(())
 }
 

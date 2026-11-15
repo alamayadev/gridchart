@@ -769,6 +769,19 @@ impl Page {
         self.op(&s);
     }
 
+    /// Intersects the clip with a closed polygon (until the next [`Page::restore`]). Returns
+    /// `false` and writes nothing when the path cannot be clipped.
+    pub fn clip_polygon(&mut self, pts: &[[f32; 2]]) -> bool {
+        if pts.len() < 3 || self.full() {
+            return false;
+        }
+        let mut s = String::new();
+        self.path(&mut s, pts, true);
+        s.push_str(" W n");
+        self.op(&s);
+        true
+    }
+
     /// A rectangle with independent corner radii, filled and/or stroked. All-square corners keep
     /// the compact `re` operator.
     #[expect(clippy::too_many_arguments, reason = "the drawing API takes geometry, style and radii positionally")]

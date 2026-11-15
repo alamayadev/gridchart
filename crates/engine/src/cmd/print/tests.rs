@@ -967,6 +967,40 @@ fn equations_print_with_the_symbol_font() {
 }
 
 #[test]
+fn a_gradient_polygon_reaches_the_pdf_shading_behind_a_clip() {
+    use gridcraft_chart::{Fill, Prim};
+    let prims = vec![
+        Prim::Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 200.0,
+            h: 200.0,
+            fill: Some(Fill::solid([255, 255, 255, 255])),
+            stroke: None,
+            radii: [0.0; 4],
+        },
+        Prim::Polygon {
+            pts: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 100.0], [0.0, 100.0]],
+            fill: Some(Fill::Linear {
+                from: [200, 10, 10, 255],
+                to: [10, 10, 200, 255],
+                start: [0.0, 50.0],
+                end: [100.0, 50.0],
+            }),
+            stroke: None,
+        },
+    ];
+    let mut d = PdfDoc::new();
+    let p = d.add_page(200.0, 200.0);
+    draw::draw_prims(p, &prims, draw::Xf { ox: 0.0, oy: 0.0, k: 1.0 });
+    let pdf = d.finish();
+    assert!(contains(&pdf, "/ShadingType 2"));
+    assert!(contains(&pdf, "/Sh0 sh"));
+    assert!(contains(&pdf, " W n"), "gradient polygon is clipped");
+    assert!(contains(&pdf, "/C0 [0.784 0.039 0.039 ]") || contains(&pdf, "/C0 [0.784 0.039 0.039]"));
+}
+
+#[test]
 fn chart_budget_counts_path_points_and_drops_charts_that_do_not_fit() {
     use gridcraft_chart::Prim;
     let line = |n: usize| Prim::Line { pts: vec![[0.0, 0.0]; n], color: [0, 0, 0, 255], width: 1.0, dash: false };

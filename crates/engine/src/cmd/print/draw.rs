@@ -173,13 +173,36 @@ pub(super) fn draw_prims(pg: &mut Page, prims: &[gridcraft_chart::Prim], xf: Xf)
                 pg.polyline(&xf.pts(pts), (width * k).max(0.1), blend_over(*color, bg), &d);
             }
             Prim::Polygon { pts, fill, stroke } => {
-                // A ramp paints its near stop flat here until the polygon clip lands (M3.5);
-                // a solid fill paints exactly as before.
-                pg.polygon(
-                    &xf.pts(pts),
-                    fill.map(|f| blend_over(f.start(), bg)),
-                    stroke.map(|(c, w)| (blend_over(c, bg), (w * k).max(0.1))),
-                );
+                let xpts = xf.pts(pts);
+                match fill {
+                    Some(Fill::Linear { from, to, start, end }) => {
+                        let (near, far) = (blend_over(*from, bg), blend_over(*to, bg));
+                        let (sx, sy) = xf.p(start[0], start[1]);
+                        let (ex, ey) = xf.p(end[0], end[1]);
+                        pg.save();
+                        if pg.clip_polygon(&xpts) {
+                            if !pg.axial_shading([sx, sy], [ex, ey], near, far, 1.0) {
+                                pg.polygon(&xpts, Some(near), None);
+                            }
+                        } else {
+                            pg.polygon(&xpts, Some(near), None);
+                        }
+                        pg.restore();
+                        if let Some((c, w)) = stroke {
+                            pg.polygon(&xpts, None, Some((blend_over(*c, bg), (w * k).max(0.1))));
+                        }
+                    }
+                    Some(Fill::Solid(c)) => {
+                        pg.polygon(
+                            &xpts,
+                            Some(blend_over(*c, bg)),
+                            stroke.map(|(c, w)| (blend_over(c, bg), (w * k).max(0.1))),
+                        );
+                    }
+                    None => {
+                        pg.polygon(&xpts, None, stroke.map(|(c, w)| (blend_over(c, bg), (w * k).max(0.1))));
+                    }
+                }
             }
             Prim::Wedge { cx, cy, r_outer, r_inner, a0, a1, fill, stroke } => {
                 let span = (a1 - a0).abs().min(std::f32::consts::TAU);
@@ -191,11 +214,36 @@ pub(super) fn draw_prims(pg: &mut Page, prims: &[gridcraft_chart::Prim], xf: Xf)
                 } else {
                     pts.push([*cx, *cy]);
                 }
-                pg.polygon(
-                    &xf.pts(&pts),
-                    fill.map(|f| blend_over(f.start(), bg)),
-                    stroke.map(|(c, w)| (blend_over(c, bg), (w * k).max(0.1))),
-                );
+                let xpts = xf.pts(&pts);
+                match fill {
+                    Some(Fill::Linear { from, to, start, end }) => {
+                        let (near, far) = (blend_over(*from, bg), blend_over(*to, bg));
+                        let (sx, sy) = xf.p(start[0], start[1]);
+                        let (ex, ey) = xf.p(end[0], end[1]);
+                        pg.save();
+                        if pg.clip_polygon(&xpts) {
+                            if !pg.axial_shading([sx, sy], [ex, ey], near, far, 1.0) {
+                                pg.polygon(&xpts, Some(near), None);
+                            }
+                        } else {
+                            pg.polygon(&xpts, Some(near), None);
+                        }
+                        pg.restore();
+                        if let Some((c, w)) = stroke {
+                            pg.polygon(&xpts, None, Some((blend_over(*c, bg), (w * k).max(0.1))));
+                        }
+                    }
+                    Some(Fill::Solid(c)) => {
+                        pg.polygon(
+                            &xpts,
+                            Some(blend_over(*c, bg)),
+                            stroke.map(|(c, w)| (blend_over(c, bg), (w * k).max(0.1))),
+                        );
+                    }
+                    None => {
+                        pg.polygon(&xpts, None, stroke.map(|(c, w)| (blend_over(c, bg), (w * k).max(0.1))));
+                    }
+                }
             }
             Prim::Circle { cx, cy, r, fill, stroke } => {
                 let (px, py) = xf.p(*cx, *cy);
