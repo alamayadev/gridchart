@@ -109,7 +109,7 @@ pub(super) fn draw_prims(pg: &mut Page, prims: &[gridcraft_chart::Prim], xf: Xf)
             Prim::Rect { x, y, w, h, fill, stroke, .. } => {
                 let (px, py) = xf.p(*x, *y);
                 if let Some(f) = fill {
-                    pg.fill_rect(px, py, w * k, h * k, blend(*f));
+                    pg.fill_rect(px, py, w * k, h * k, blend(f.start()));
                 }
                 if let Some((c, lw)) = stroke {
                     pg.rect_stroke(px, py, w * k, h * k, (lw * k).max(0.1), blend(*c));

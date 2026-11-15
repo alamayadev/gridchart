@@ -258,14 +258,14 @@ pub fn rasterize(prims: &[Prim], w: u32, h: u32, background: Rgba) -> Vec<u8> {
     let mut cv = Canvas { w, h, buf, acc: Vec::new(), work: MAX_SCAN_WORK };
     for p in prims {
         match p {
-            Prim::Rect { x, y, w, h, fill, stroke, radius } => {
+            Prim::Rect { x, y, w, h, fill, stroke, radii } => {
                 if let Some(f) = fill {
-                    cv.fill(&vec![rounded_rect(*x, *y, *w, *h, *radius)], *f);
+                    cv.fill(&vec![rounded_rect(*x, *y, *w, *h, radii[0])], f.start());
                 }
                 if let Some((c, sw)) = stroke {
                     let sw = sw.clamp(0.5, 50.0);
-                    let outer = rounded_rect(x - sw / 2.0, y - sw / 2.0, w + sw, h + sw, radius + sw / 2.0);
-                    let inner = rounded_rect(x + sw / 2.0, y + sw / 2.0, (w - sw).max(0.0), (h - sw).max(0.0), (radius - sw / 2.0).max(0.0));
+                    let outer = rounded_rect(x - sw / 2.0, y - sw / 2.0, w + sw, h + sw, radii[0] + sw / 2.0);
+                    let inner = rounded_rect(x + sw / 2.0, y + sw / 2.0, (w - sw).max(0.0), (h - sw).max(0.0), (radii[0] - sw / 2.0).max(0.0));
                     cv.fill(&vec![outer, inner], *c);
                 }
             }

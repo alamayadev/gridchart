@@ -22,7 +22,7 @@ fn combo_table_keys_use_each_series_index() {
         })
         .unwrap();
     for (i, s) in d.series.iter().enumerate() {
-        let boxes = p.iter().filter(|p| matches!(p, Prim::Rect { y, fill: Some(f), .. } if *f == s.color && *y > header_y)).count();
+        let boxes = p.iter().filter(|p| matches!(p, Prim::Rect { y, fill: Some(f), .. } if f.start() == s.color && *y > header_y)).count();
         let lines =
             p.iter().filter(|p| matches!(p, Prim::Line { pts, color, .. } if *color == s.color && pts.iter().all(|p| p[1] > header_y))).count();
         assert_eq!(boxes, usize::from(i == 0), "series {i}: column key");
@@ -87,7 +87,7 @@ fn table_columns_align_with_plot_and_keep_missing_values_blank() {
     let centers: Vec<f32> = p
         .iter()
         .filter_map(|p| match p {
-            Prim::Rect { x, y, w, fill: Some(f), .. } if *f == color && *y < header_y => Some(x + w / 2.0),
+            Prim::Rect { x, y, w, fill: Some(f), .. } if f.start() == color && *y < header_y => Some(x + w / 2.0),
             _ => None,
         })
         .collect();
@@ -102,12 +102,12 @@ fn table_columns_align_with_plot_and_keep_missing_values_blank() {
         .collect();
     assert_eq!(cells, ["Rate", "25.0%", "75.0%"], "blank cells are not zeroes");
     assert!(
-        p.iter().any(|p| matches!(p, Prim::Rect { y, fill: Some(f), .. } if *f == color && *y > header_y)),
+        p.iter().any(|p| matches!(p, Prim::Rect { y, fill: Some(f), .. } if f.start() == color && *y > header_y)),
         "legend key independent of hidden chart legend"
     );
     c.data_table = Some(ChartDataTable { show_keys: false, ..Default::default() });
     let off = render(&c, &d, 600.0, 400.0, &ApproxMeasure);
-    assert!(!off.iter().any(|p| matches!(p, Prim::Rect { y, fill: Some(f), .. } if *f == color && *y > header_y)));
+    assert!(!off.iter().any(|p| matches!(p, Prim::Rect { y, fill: Some(f), .. } if f.start() == color && *y > header_y)));
 }
 
 #[test]

@@ -2,7 +2,7 @@
 
 use std::fmt::Write as _;
 
-use gridcraft_chart::{HAlign, Prim, Rgba, VAlign};
+use gridcraft_chart::{Fill, HAlign, Prim, Rgba, VAlign};
 use gridcraft_model::{Chart, Workbook};
 
 use crate::io::esc;
@@ -57,12 +57,13 @@ fn prims_svg_within(prims: &[Prim], w: f32, h: f32, style: &str, budget: usize) 
             return None;
         }
         match p {
-            Prim::Rect { x, y, w, h, fill, stroke, radius } => {
+            Prim::Rect { x, y, w, h, fill, stroke, radii } => {
                 let _ = write!(out, "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\"", num(*x), num(*y), num(*w), num(*h));
-                if *radius > 0.0 {
-                    let _ = write!(out, " rx=\"{}\"", num(*radius));
+                // Plan 02-01 keeps one scalar radius per rect: radii[0] is the old `radius`.
+                if radii[0] > 0.0 {
+                    let _ = write!(out, " rx=\"{}\"", num(radii[0]));
                 }
-                paint(&mut out, *fill, *stroke);
+                paint(&mut out, fill.as_ref().map(Fill::start), *stroke);
                 out.push_str("/>");
             }
             Prim::Line { pts, color, width, dash } => {
@@ -171,7 +172,7 @@ mod tests {
 
     #[test]
     fn an_svg_past_its_byte_budget_is_left_out() {
-        let rect = Prim::Rect { x: 1.0, y: 2.0, w: 3.0, h: 4.0, fill: Some([255, 0, 0, 255]), stroke: None, radius: 0.0 };
+        let rect = Prim::Rect { x: 1.0, y: 2.0, w: 3.0, h: 4.0, fill: Some(Fill::solid([255, 0, 0, 255])), stroke: None, radii: [0.0; 4] };
         let prims = vec![rect; 10_000];
         let full = prims_svg(&prims, 100.0, 50.0, "");
         assert!(full.len() > 100_000);
@@ -184,7 +185,7 @@ mod tests {
     fn every_primitive_becomes_an_svg_element() {
         let red = [255, 0, 0, 255];
         let prims = vec![
-            Prim::Rect { x: 1.0, y: 2.0, w: 3.0, h: 4.0, fill: Some(red), stroke: None, radius: 0.0 },
+            Prim::Rect { x: 1.0, y: 2.0, w: 3.0, h: 4.0, fill: Some(Fill::solid(red)), stroke: None, radii: [0.0; 4] },
             Prim::Line { pts: vec![[0.0, 0.0], [5.0, 5.5]], color: red, width: 1.0, dash: true },
             Prim::Polygon { pts: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], fill: red, stroke: Some(([0, 0, 0, 255], 1.0)) },
             Prim::Wedge { cx: 10.0, cy: 10.0, r_outer: 5.0, r_inner: 2.0, a0: 0.0, a1: 1.0, fill: red, stroke: None },

@@ -10,6 +10,7 @@ use crate::resolve::style::{ChartStyle, chart_style};
 use crate::resolve::{MAX_POINTS, MAX_SERIES, MAX_TRENDLINES, points_per_series, ramp_color};
 use crate::trend::{auto_name, fit_trendline, moving_average};
 use crate::{ChartData, HAlign, Measure, Prim, Rgba, SeriesData, VAlign};
+pub(crate) use crate::{Fill, Paint};
 
 mod cartesian;
 mod frame;
@@ -46,6 +47,12 @@ const MAX_MARKERS: usize = 5000;
 const MAX_LABELS: usize = 200;
 /// Columns and bars narrower than this (in pixels) are merged per pixel column into one rectangle.
 const MIN_BAR_PX: f32 = 0.25;
+/// Bars thinner than this (in pixels) on either axis stay square: a rounded tip needs room.
+const MIN_ROUNDED_BAR_PX: f32 = 3.0;
+/// Corner radius of a bar tip, as a fraction of its shorter side (capped at half that side).
+const BAR_RADIUS_FRACTION: f32 = 0.25;
+/// Far-stop alpha of a bar's sheen ramp, as a fraction of the series colour's alpha.
+const GRADIENT_SHEEN_ALPHA: f32 = 0.75;
 /// Most wedges a doughnut draws for the whole chart. The per-series and per-category limits do not
 /// bound their product: 255 series of 20,000 categories would be millions of wedges. Every drawable
 /// ring shares this budget, so the innermost ring keeps its largest slices and the outer rings are
@@ -113,8 +120,22 @@ impl Ctx<'_> {
         }
         self.out.push(Prim::Text { x, y, text: s.to_string(), size, color, bold: false, align, valign, rotation: 0.0 });
     }
+    /// Push a rectangle with an explicit paint and per-corner radii.
+    fn rect_paint(&mut self, r: Bx, fill: Paint, stroke: Option<(Rgba, f32)>, radii: [f32; 4]) {
+        self.out.push(Prim::Rect { x: r.x, y: r.y, w: r.w, h: r.h, fill, stroke, radii });
+    }
     fn rect(&mut self, x: f32, y: f32, w: f32, h: f32, fill: Rgba, stroke: Option<(Rgba, f32)>) {
-        self.out.push(Prim::Rect { x, y, w, h, fill: Some(fill), stroke, radius: 0.0 });
+        self.rect_paint(Bx { x, y, w, h }, Some(Fill::solid(fill)), stroke, [0.0; 4]);
+    }
+    /// A two-stop sheen along a vertical value axis: full c on the baseline at y0, fading to
+    /// GRADIENT_SHEEN_ALPHA of its alpha at the value end y1, both at x.
+    fn gradient_axis_v(&self, c: Rgba, x: f32, y0: f32, y1: f32) -> Fill {
+        Fill::Linear { from: c, to: sheen(c), start: [x, y0], end: [x, y1] }
+    }
+    /// A two-stop sheen along a horizontal value axis: full c on the baseline at x0, fading at
+    /// the value end x1, both at y.
+    fn gradient_axis_h(&self, c: Rgba, y: f32, x0: f32, x1: f32) -> Fill {
+        Fill::Linear { from: c, to: sheen(c), start: [x0, y], end: [x1, y] }
     }
     fn line(&mut self, pts: Vec<[f32; 2]>, color: Rgba, width: f32) {
         if pts.len() >= 2 {
@@ -127,6 +148,11 @@ impl Ctx<'_> {
     fn vline(&mut self, x: f32, y0: f32, y1: f32, color: Rgba, width: f32) {
         self.line(vec![[x, y0], [x, y1]], color, width);
     }
+}
+
+/// The faded far stop of a sheen: same hue, alpha at GRADIENT_SHEEN_ALPHA.
+fn sheen(c: Rgba) -> Rgba {
+    [c[0], c[1], c[2], (c[3] as f32 * GRADIENT_SHEEN_ALPHA).round().clamp(0.0, 255.0) as u8]
 }
 
 fn sanitize_vals(v: &[Option<f64>]) -> Vec<Option<f64>> {
@@ -218,7 +244,7 @@ pub fn render(chart: &Chart, data: &ChartData, w: f32, h: f32, m: &dyn Measure) 
     let mut ctx = Ctx { out: Vec::new(), m, style };
     // The card is an explicit primitive (prims[0]), so a dark preset paints its own surface here
     // rather than relying on whatever background the host happens to draw behind the chart.
-    ctx.out.push(Prim::Rect { x: 0.0, y: 0.0, w, h, fill: Some(style.card), stroke: Some((style.card_border, 1.0)), radius: 0.0 });
+    ctx.out.push(Prim::Rect { x: 0.0, y: 0.0, w, h, fill: Some(Fill::solid(style.card)), stroke: Some((style.card_border, 1.0)), radii: [0.0; 4] });
     let pad = (w.min(h) * 0.04).clamp(2.0, 10.0);
     let mut area = Bx { x: pad, y: pad, w: w - 2.0 * pad, h: h - 2.0 * pad };
     if let Some(t) = chart_title(chart, &data) {
@@ -284,7 +310,7 @@ pub(crate) fn finalize(prims: Vec<Prim>, w: f32, h: f32) -> Vec<Prim> {
     prims
         .into_iter()
         .filter_map(|p| match p {
-            Prim::Rect { x, y, w: rw, h: rh, fill, stroke, radius } => {
+            Prim::Rect { x, y, w: rw, h: rh, fill, stroke, radii } => {
                 if !(fin(x) && fin(y) && fin(rw) && fin(rh)) {
                     return None;
                 }
@@ -293,8 +319,9 @@ pub(crate) fn finalize(prims: Vec<Prim>, w: f32, h: f32) -> Vec<Prim> {
                 if x1 - x0 <= 0.0 || y1 - y0 <= 0.0 {
                     return None;
                 }
-                let radius = if fin(radius) { radius.clamp(0.0, (x1 - x0).min(y1 - y0) / 2.0) } else { 0.0 };
-                Some(Prim::Rect { x: x0, y: y0, w: x1 - x0, h: y1 - y0, fill, stroke: clamp_stroke(stroke), radius })
+                let limit = (x1 - x0).min(y1 - y0) / 2.0;
+                let radii = radii.map(|r| if fin(r) { r.clamp(0.0, limit) } else { 0.0 });
+                Some(Prim::Rect { x: x0, y: y0, w: x1 - x0, h: y1 - y0, fill, stroke: clamp_stroke(stroke), radii })
             }
             Prim::Line { pts, color, width, dash } => {
                 if !pts_ok(&pts) || pts.len() < 2 || !fin(width) {

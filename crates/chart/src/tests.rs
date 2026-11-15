@@ -700,7 +700,7 @@ fn style_preset_reaches_the_primitives() {
         let d = resolve(&wb, 0, &c);
         let prims = render(&c, &d, 480.0, 288.0, &ApproxMeasure);
         let card = match prims.first() {
-            Some(Prim::Rect { fill: Some(f), .. }) => *f,
+            Some(Prim::Rect { fill: Some(f), .. }) => f.start(),
             other => panic!("prims[0] should be the card, got {other:?}"),
         };
         let ink = prims
@@ -783,7 +783,7 @@ fn rasterize_bar_center_has_bar_color() {
     let bars: Vec<_> = prims
         .iter()
         .filter_map(|p| match p {
-            Prim::Rect { x, y, w, h, fill: Some(f), .. } if *f == east && *w > 10.0 => Some((*x, *y, *w, *h)),
+            Prim::Rect { x, y, w, h, fill: Some(f), .. } if f.start() == east && *w > 10.0 => Some((*x, *y, *w, *h)),
             _ => None,
         })
         .collect();
@@ -818,7 +818,7 @@ fn rasterize_bar_center_has_bar_color() {
 fn rasterize_does_not_panic_on_negative_rect_extents() {
     let red = [255, 0, 0, 255];
     for (w, h) in [(-10.0, 10.0), (10.0, -10.0), (-10.0, -10.0), (f32::NAN, f32::NAN)] {
-        let rect = Prim::Rect { x: 5.0, y: 5.0, w, h, fill: Some(red), stroke: Some((red, 2.0)), radius: 0.0 };
+        let rect = Prim::Rect { x: 5.0, y: 5.0, w, h, fill: Some(Fill::solid(red)), stroke: Some((red, 2.0)), radii: [0.0; 4] };
         let img = rasterize(&[rect], 20, 20, [0, 0, 0, 0]);
         assert_eq!(img.len(), 20 * 20 * 4);
     }
@@ -1311,7 +1311,7 @@ fn treemap_and_histogram_shapes() {
         series: vec![series("h", &vals, [10, 20, 30, 255], ChartKind::Histogram)],
     };
     let prims = render(&chart(ChartKind::Histogram), &d, 600.0, 400.0, &ApproxMeasure);
-    let bins = prims.iter().filter(|p| matches!(p, Prim::Rect { fill: Some([10, 20, 30, 255]), .. })).count();
+    let bins = prims.iter().filter(|p| matches!(p, Prim::Rect { fill: Some(f), .. } if f.start() == [10, 20, 30, 255])).count();
     assert_eq!(bins, 10);
 }
 
@@ -1325,7 +1325,18 @@ fn histogram_boundary_values_match_interval_labels() {
             series: vec![series("h", vals, [10, 20, 30, 255], ChartKind::Histogram)],
         };
         let prims = render(&chart(ChartKind::Histogram), &d, 600.0, 400.0, &ApproxMeasure);
-        prims.iter().filter_map(|p| if let Prim::Rect { h, fill: Some([10, 20, 30, 255]), .. } = p { Some(*h) } else { None }).collect()
+        prims
+            .iter()
+            .filter_map(|p| {
+                if let Prim::Rect { h, fill: Some(f), .. } = p
+                    && f.start() == [10, 20, 30, 255]
+                {
+                    Some(*h)
+                } else {
+                    None
+                }
+            })
+            .collect()
     };
     // Labels are "[0, 7.5]" and "(7.5, 15.0]": 7.5 belongs to the first bar, so the counts are 2 and 1.
     let h = heights(&[0.0, 7.5, 15.0]);
@@ -1652,7 +1663,7 @@ fn a_huge_trendline_forecast_does_not_collapse_the_columns() {
     let prims = render(&c, &d, 600.0, 400.0, &m);
     assert_sane(&prims, 600.0, 400.0);
     let widths: Vec<f32> =
-        prims.iter().filter_map(|p| if let Prim::Rect { w, fill: Some(f), .. } = p { (*f == col).then_some(*w) } else { None }).collect();
+        prims.iter().filter_map(|p| if let Prim::Rect { w, fill: Some(f), .. } = p { (f.start() == col).then_some(*w) } else { None }).collect();
     assert_eq!(widths.len(), 5);
     assert!(widths.iter().all(|w| *w > 4.0), "columns stay visible: {widths:?}");
     let trend = lines_of(&prims, tc);
@@ -1675,7 +1686,7 @@ fn box_whisker_draws_each_series_quartile_method() {
     let heights: Vec<f32> = prims
         .iter()
         .filter_map(|p| match p {
-            Prim::Rect { h, fill, .. } if *fill == Some(color) => Some(*h),
+            Prim::Rect { h, fill, .. } if fill.as_ref().map(Fill::start) == Some(color) => Some(*h),
             _ => None,
         })
         .collect();
@@ -1847,4 +1858,44 @@ fn volatile_defined_names_are_followed() {
     wb.sheets.push(Arc::new(gridcraft_model::Sheet::new("Other")));
     assert!(!has_volatile_series(&wb, 1, &with("=Dice")));
     assert!(has_volatile_series(&wb, 1, &with("=FreshClock")));
+}
+
+// ---------------------------------------------------------------- Fill / radii payload (02-01-01)
+
+#[test]
+fn payload_is_copy_copy_cheap_and_serde_round_trips() {
+    // Prim was 48 bytes before the payload change; a cache line of headroom is the budget.
+    assert!(std::mem::size_of::<Prim>() <= 112, "Prim grew to {}", std::mem::size_of::<Prim>());
+    // Fill is Copy and needs no heap: one colour, or two stops plus an axis. The payload is 24
+    // bytes, so with a discriminant and 4-byte alignment the enum is 28.
+    assert!(std::mem::size_of::<Fill>() <= 28, "Fill grew to {}", std::mem::size_of::<Fill>());
+    let ramp = Fill::Linear { from: [1, 2, 3, 255], to: [4, 5, 6, 128], start: [0.0, 10.0], end: [0.0, 0.0] };
+    let copied = ramp;
+    assert_eq!(copied, ramp, "Fill is Copy");
+    let json = serde_json::to_string(&ramp).expect("Fill serializes");
+    let back: Fill = serde_json::from_str(&json).expect("Fill deserializes");
+    assert_eq!(back, ramp, "a ramp survives a round trip: {json}");
+}
+
+#[test]
+fn a_solid_fill_answers_its_start_colour() {
+    let a = [9, 8, 7, 200];
+    assert_eq!(Fill::Solid(a).start(), a);
+    assert_eq!(Fill::Linear { from: a, to: [1, 2, 3, 4], start: [0.0, 0.0], end: [10.0, 0.0] }.start(), a);
+    assert_eq!(Fill::Linear { from: a, to: a, start: [0.0, 0.0], end: [10.0, 0.0] }.start(), a);
+}
+
+#[test]
+fn the_producer_gives_a_bar_rounded_outward_tips() {
+    let prims = render(&chart(ChartKind::ColumnClustered), &sample(ChartKind::ColumnClustered), 640.0, 400.0, &ApproxMeasure);
+    let up = prims.iter().any(|p| {
+        matches!(p, Prim::Rect { radii, .. }
+        if radii[0] > 0.0 && radii[1] > 0.0 && radii[2] == 0.0 && radii[3] == 0.0)
+    });
+    let down = prims.iter().any(|p| {
+        matches!(p, Prim::Rect { radii, .. }
+        if radii[2] > 0.0 && radii[3] > 0.0 && radii[0] == 0.0 && radii[1] == 0.0)
+    });
+    assert!(up, "a positive column rounds the two tips away from the baseline");
+    assert!(down, "a negative column rounds the two tips below the baseline");
 }

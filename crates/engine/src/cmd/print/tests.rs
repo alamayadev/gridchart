@@ -1007,7 +1007,7 @@ fn style_tokens_reach_the_raster_svg_and_pdf_backends() {
             let data = gridcraft_chart::resolve(wb, 0, ch);
             let prims = gridcraft_chart::render(ch, &data, W as f32, H as f32, &super::draw::PdfMeasure);
             let card = match prims.first() {
-                Some(gridcraft_chart::Prim::Rect { fill: Some(f), .. }) => *f,
+                Some(gridcraft_chart::Prim::Rect { fill: Some(f), .. }) => f.start(),
                 other => panic!("the first primitive of a chart is the card, got {other:?}"),
             };
             let pixels = gridcraft_chart::rasterize(&prims, W, H, [255, 255, 255, 255]);

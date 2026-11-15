@@ -2173,6 +2173,7 @@ dependencies = [
  "gridcraft-model",
  "gridcraft-numfmt",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

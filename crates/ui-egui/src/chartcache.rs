@@ -177,7 +177,7 @@ mod tests {
     }
 
     fn rect_prim(w: f32) -> Vec<Prim> {
-        vec![Prim::Rect { x: 0.0, y: 0.0, w, h: 1.0, fill: None, stroke: None, radius: 0.0 }]
+        vec![Prim::Rect { x: 0.0, y: 0.0, w, h: 1.0, fill: None, stroke: None, radii: [0.0; 4] }]
     }
 
     fn line_prim(points: usize) -> Vec<Prim> {

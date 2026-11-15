@@ -48,13 +48,15 @@ pub fn paint_prims(p: &Painter, origin: Pos2, prims: &[Prim], z: f32) {
     let pt = |x: f32, y: f32| pos2(origin.x + x * z, origin.y + y * z);
     for prim in prims {
         match prim {
-            Prim::Rect { x, y, w, h, fill, stroke, radius } => {
+            Prim::Rect { x, y, w, h, fill, stroke, radii } => {
                 let r = Rect::from_min_size(pt(*x, *y), vec2(w * z, h * z));
+                // One scalar corner radius for now; plan 02-02 turns these into per-corner shapes.
+                let radius = radii[0] * z;
                 if let Some(f) = fill {
-                    p.rect_filled(r, radius * z, rgba(*f));
+                    p.rect_filled(r, radius, rgba(f.start()));
                 }
                 if let Some((c, wd)) = stroke {
-                    p.rect_stroke(r, radius * z, Stroke::new(wd * z.max(0.5), rgba(*c)), StrokeKind::Inside);
+                    p.rect_stroke(r, radius, Stroke::new(wd * z.max(0.5), rgba(*c)), StrokeKind::Inside);
                 }
             }
             Prim::Line { pts, color, width, dash } => {
@@ -619,7 +621,7 @@ pub(crate) fn ink_color(line: Color32, width_pt: f32) -> Color32 {
 pub(crate) mod tests {
     use std::cell::Cell;
 
-    use gridcraft_chart::Measure;
+    use gridcraft_chart::{Fill, Measure};
 
     use super::*;
 
@@ -666,8 +668,16 @@ pub(crate) mod tests {
             let style = gridcraft_chart::chart_style(id);
             let bar = gridcraft_chart::chart_style_preset(id)[0];
             let prims = vec![
-                Prim::Rect { x: 0.0, y: 0.0, w: 480.0, h: 288.0, fill: Some(style.card), stroke: Some((style.card_border, 1.0)), radius: 0.0 },
-                Prim::Rect { x: 40.0, y: 40.0, w: 60.0, h: 200.0, fill: Some(bar), stroke: None, radius: 0.0 },
+                Prim::Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 480.0,
+                    h: 288.0,
+                    fill: Some(Fill::solid(style.card)),
+                    stroke: Some((style.card_border, 1.0)),
+                    radii: [0.0; 4],
+                },
+                Prim::Rect { x: 40.0, y: 40.0, w: 60.0, h: 200.0, fill: Some(Fill::solid(bar)), stroke: None, radii: [0.0; 4] },
             ];
             let ctx = egui::Context::default();
             let mut out = ctx.run_ui(Default::default(), |ui| paint_prims(ui.painter(), pos2(0.0, 0.0), &prims, 1.0));

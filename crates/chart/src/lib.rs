@@ -53,6 +53,34 @@ pub enum VAlign {
     Bottom,
 }
 
+/// How a shape is filled: one flat colour, or a two-stop linear ramp between `start` and `end`
+/// (chart coordinates, same space as the primitive's geometry).
+///
+/// Fixed-size and Copy so a Prim stays cheap to clone and the payload stays bounded
+/// (PRIM-01: no unbounded stop list).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Fill {
+    Solid(Rgba),
+    Linear { from: Rgba, to: Rgba, start: [f32; 2], end: [f32; 2] },
+}
+
+impl Fill {
+    /// The flat colour a backend that cannot interpolate should paint: a ramp's `from` stop.
+    pub fn solid(color: Rgba) -> Self {
+        Fill::Solid(color)
+    }
+    /// The colour a ramp starts at; equivalent to `solid` for a solid fill.
+    pub fn start(&self) -> Rgba {
+        match self {
+            Fill::Solid(c) => *c,
+            Fill::Linear { from, .. } => *from,
+        }
+    }
+}
+
+/// Optional fill: `None` draws no fill (outline only).
+pub type Paint = Option<Fill>;
+
 /// A drawing primitive in chart coordinates (origin top-left, y down, units = points/pixels).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Prim {
@@ -61,9 +89,10 @@ pub enum Prim {
         y: f32,
         w: f32,
         h: f32,
-        fill: Option<Rgba>,
+        fill: Paint,
         stroke: Option<(Rgba, f32)>,
-        radius: f32,
+        /// Corner radii in [nw, ne, se, sw] order, in chart units.
+        radii: [f32; 4],
     },
     Line {
         pts: Vec<[f32; 2]>,
