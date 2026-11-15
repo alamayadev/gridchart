@@ -630,6 +630,137 @@ fn pie_labels_keep_their_inside_placement() {
     }
 }
 
+/// A single-ring doughnut is the one doughnut shape allowed to step outside: its thin slices get
+/// the same three-point leader a pie gets, anchored on that ring's own outer radius.
+#[test]
+fn doughnut_single_ring_labels_small_slices_outside() {
+    let d = ChartData {
+        category_levels: vec![],
+        palette: (0..10).map(|j| [(30 + j as u8 * 20), 96, 130, 255]).collect(),
+        categories: (0..10).map(|j| format!("C{j}")).collect(),
+        series: vec![series(
+            "Only",
+            &[100.0; 9].iter().chain([&0.4]).copied().collect::<Vec<f64>>().as_slice(),
+            [20, 96, 130, 255],
+            ChartKind::Doughnut,
+        )],
+    };
+    let mut c = chart(ChartKind::Doughnut);
+    c.title = None;
+    c.legend = LegendPos::None;
+    c.hole_size = 75;
+    let prims = render(&c, &d, 640.0, 400.0, &ApproxMeasure);
+    let (cx, cy, outer) = prims
+        .iter()
+        .find_map(|p| match p {
+            Prim::Wedge { cx, cy, r_outer, .. } => Some((*cx, *cy, *r_outer)),
+            _ => None,
+        })
+        .expect("a wedge");
+    let ink = chart_style(0).text;
+    let leaders: Vec<&Prim> = prims
+        .iter()
+        .filter(|p| matches!(p, Prim::Line { pts, color, width, .. } if pts.len() == 3 && *color == ink && (*width - 1.0).abs() < 1e-6))
+        .collect();
+    assert_eq!(leaders.len(), 1, "one leader for the hairline slice");
+    let Prim::Line { pts, .. } = leaders[0] else { panic!("leader") };
+    let dist = ((pts[0][0] - cx).powi(2) + (pts[0][1] - cy).powi(2)).sqrt();
+    assert!((dist - (outer + 3.0)).abs() < 0.01, "the leader starts on the ring's outer radius: {dist} vs {}", outer + 3.0);
+    let anchored = prims
+        .iter()
+        .filter(|p| matches!(p, Prim::Text { x, y, size, .. } if *size == 9.0 && (*x - pts[2][0]).abs() < 1e-3 && (*y - pts[2][1]).abs() < 1e-3))
+        .count();
+    assert_eq!(anchored, 1, "the label sits on the leader's end");
+}
+
+/// A multi-ring doughnut never emits a leader: outside text would collide across rings. Every
+/// label it does emit stays within the drawn rings' radial extent.
+#[test]
+fn doughnut_multiple_rings_keep_every_label_inside() {
+    let d = ChartData {
+        category_levels: vec![],
+        palette: (0..6).map(|j| [(30 + j as u8 * 30), 96, 130, 255]).collect(),
+        categories: (0..6).map(|j| format!("C{j}")).collect(),
+        series: vec![
+            series("A", &[1.0; 6], [20, 96, 130, 255], ChartKind::Doughnut),
+            series("B", &[1.0; 6], [221, 132, 82, 255], ChartKind::Doughnut),
+        ],
+    };
+    let mut c = chart(ChartKind::Doughnut);
+    c.title = None;
+    c.legend = LegendPos::None;
+    let prims = render(&c, &d, 640.0, 400.0, &ApproxMeasure);
+    let ink = chart_style(0).text;
+    assert!(
+        prims.iter().all(|p| !matches!(p, Prim::Line { pts, color, width, .. } if pts.len() == 3 && *color == ink && (*width - 1.0).abs() < 1e-6)),
+        "no leader on a two-ring doughnut"
+    );
+    let (cx, cy) = prims
+        .iter()
+        .find_map(|p| match p {
+            Prim::Wedge { cx, cy, .. } => Some((*cx, *cy)),
+            _ => None,
+        })
+        .expect("a wedge");
+    let ri = prims
+        .iter()
+        .filter_map(|p| match p {
+            Prim::Wedge { r_inner, .. } => Some(*r_inner),
+            _ => None,
+        })
+        .fold(f32::INFINITY, f32::min);
+    let ro = prims
+        .iter()
+        .filter_map(|p| match p {
+            Prim::Wedge { r_outer, .. } => Some(*r_outer),
+            _ => None,
+        })
+        .fold(f32::NEG_INFINITY, f32::max);
+    let labels: Vec<(f32, f32)> = prims
+        .iter()
+        .filter_map(|p| match p {
+            Prim::Text { x, y, size, .. } if *size == 9.0 => Some((*x, *y)),
+            _ => None,
+        })
+        .collect();
+    assert!(!labels.is_empty(), "the inside gate still emits labels");
+    for (x, y) in labels {
+        let dist = ((x - cx).powi(2) + (y - cy).powi(2)).sqrt();
+        assert!(dist >= ri - 1e-3 && dist <= ro + 1e-3, "label at {dist} outside the rings [{ri}, {ro}]");
+    }
+}
+
+/// A zero-value slice has no sweep, so it draws no wedge, no leader and no label.
+#[test]
+fn a_zero_value_slice_gets_neither_label_nor_leader() {
+    let vals = [10.0, 0.0, 20.0, 30.0];
+    let d = ChartData {
+        category_levels: vec![],
+        palette: (0..4).map(|j| [(30 + j as u8 * 40), 96, 130, 255]).collect(),
+        categories: (0..4).map(|j| format!("C{j}")).collect(),
+        series: vec![series("Only", &vals, [20, 96, 130, 255], ChartKind::Pie)],
+    };
+    let mut c = chart(ChartKind::Pie);
+    c.title = None;
+    c.legend = LegendPos::None;
+    let prims = render(&c, &d, 640.0, 400.0, &ApproxMeasure);
+    assert_eq!(prims.iter().filter(|p| matches!(p, Prim::Wedge { .. })).count(), 3, "three wedges for four values");
+    let ink = chart_style(0).text;
+    assert!(
+        prims.iter().all(|p| !matches!(p, Prim::Line { pts, color, width, .. } if pts.len() == 3 && *color == ink && (*width - 1.0).abs() < 1e-6)),
+        "no leader for a zero slice"
+    );
+    let texts: Vec<&String> = prims
+        .iter()
+        .filter_map(|p| match p {
+            Prim::Text { text, size, .. } if *size == 9.0 => Some(text),
+            _ => None,
+        })
+        .collect();
+    // The series number format is "$#,##0" (sample()'s), so a zero label would read "$0".
+    assert_eq!(texts.iter().filter(|t| t.as_str() == "$0").count(), 0, "no label for the zero slice: {texts:?}");
+}
+
 #[test]
 fn legend_counts() {
     let d = sample(ChartKind::ColumnClustered);

@@ -391,16 +391,27 @@ pub(super) fn doughnut(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx)
                     let t = f.format(s.values.get(j).copied().flatten().unwrap_or(0.0), None);
                     let mid = a + sweep / 2.0;
                     let rr = (outer + inner) / 2.0;
-                    if ctx.tw(&t, LABEL_SIZE) <= (sweep * rr).max(outer - inner) && sweep * rr >= LABEL_SIZE {
-                        labels.push((cx + rr * mid.sin(), cy - rr * mid.cos(), t, on(fill)));
-                    }
+                    // Only a single-ring doughnut may step outside: leaders from several rings
+                    // would collide across the rings.
+                    let l = slice_label(
+                        ctx,
+                        area,
+                        Slice { cx, cy, outer: *outer, inner: *inner, mid, sweep, text: t, fill, inside_rr: rr },
+                        rings.len() == 1,
+                    );
+                    labels.extend(l);
                 }
             }
             a += sweep;
         }
     }
-    for (x, y, t, c) in labels {
-        ctx.text(x, y, &t, LABEL_SIZE, c, (HAlign::Center, VAlign::Middle));
+    for l in &labels {
+        if let Some(pts) = &l.leader {
+            ctx.line(pts.clone(), ctx.style.text, 1.0);
+        }
+    }
+    for l in &labels {
+        ctx.text(l.x, l.y, &l.text, LABEL_SIZE, l.ink, (l.align, VAlign::Middle));
     }
 }
 
