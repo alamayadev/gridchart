@@ -2533,6 +2533,66 @@ fn the_producer_gives_a_bar_rounded_outward_tips() {
     assert!(down, "a negative column rounds the two tips below the baseline");
 }
 
+#[test]
+fn gridlines_are_dashed_and_muted_and_the_baseline_is_solid_and_heavier() {
+    let prims = render(&chart(ChartKind::ColumnClustered), &sample(ChartKind::ColumnClustered), 640.0, 400.0, &ApproxMeasure);
+    let grid = chart_style(0).grid;
+    let grid_lines: Vec<&Prim> = prims
+        .iter()
+        .filter(|p| matches!(p, Prim::Line { color, .. } if *color == grid.0))
+        .collect();
+    assert!(!grid_lines.is_empty(), "default charts must emit gridlines");
+    for p in grid_lines {
+        match p {
+            Prim::Line { dash, width, .. } => {
+                assert!(*dash, "gridlines are dashed");
+                assert!((*width - grid.1).abs() < 1e-6, "gridline width is the muted token");
+            }
+            _ => unreachable!("grid line"),
+        }
+    }
+    let base = chart_style(0).baseline;
+    let baseline = prims.iter().any(|p| {
+        matches!(p, Prim::Line { color, width, dash, pts, .. }
+            if *color == base.0 && (*width - base.1).abs() < 1e-6 && !*dash && pts.len() == 2
+                && (pts[0][1] - pts[1][1]).abs() < 1e-3)
+    });
+    assert!(baseline, "a horizontal chart draws its zero/category baseline as a solid, heavier line");
+}
+
+#[test]
+fn the_baseline_is_drawn_even_with_gridlines_off() {
+    let mut c = chart(ChartKind::ColumnClustered);
+    c.gridlines = false;
+    let prims = render(&c, &sample(ChartKind::ColumnClustered), 640.0, 400.0, &ApproxMeasure);
+    let grid = chart_style(0).grid.0;
+    assert!(
+        !prims.iter().any(|p| matches!(p, Prim::Line { color, .. } if *color == grid)),
+        "gridlines off must hide gridlines"
+    );
+    let base = chart_style(0).baseline;
+    assert!(
+        prims.iter().any(|p| matches!(p, Prim::Line { color, width, dash, pts, .. }
+            if *color == base.0 && (*width - base.1).abs() < 1e-6 && !*dash && pts.len() == 2
+                && (pts[0][1] - pts[1][1]).abs() < 1e-3)),
+        "the baseline is still drawn with gridlines off"
+    );
+}
+
+#[test]
+fn radar_gridlines_are_dashed_too() {
+    let prims = render(&chart(ChartKind::Radar), &sample(ChartKind::Radar), 640.0, 400.0, &ApproxMeasure);
+    let grid = chart_style(0).grid.0;
+    let grid_lines: Vec<&Prim> = prims
+        .iter()
+        .filter(|p| matches!(p, Prim::Line { color, .. } if *color == grid))
+        .collect();
+    assert!(!grid_lines.is_empty(), "a radar chart draws grid rings/spokes");
+    for p in grid_lines {
+        assert!(matches!(p, Prim::Line { dash: true, .. }), "radar gridlines are dashed");
+    }
+}
+
 // ---------------------------------------------------------------- sanitizer: ramps and radii (02-01-02)
 
 /// A rect at the box origin with the given paint and radii, for the finalize pass.

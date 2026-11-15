@@ -127,7 +127,7 @@ pub(super) fn frame(ctx: &mut Ctx, area: Bx, cat: CatAxis, y: &ValAxis, y2: Opti
         for (v, t) in &ylabels {
             let yy = plot.bottom() - y.scale.frac(*v) * plot.h;
             if grid {
-                ctx.hline(plot.x, plot.right(), yy, ctx.style.grid.0, ctx.style.grid.1);
+                ctx.grid_hline(plot, yy);
             }
             ctx.text(plot.x - 4.0, yy, t, ls, ctx.style.text, (HAlign::Right, VAlign::Middle));
         }
@@ -139,7 +139,7 @@ pub(super) fn frame(ctx: &mut Ctx, area: Bx, cat: CatAxis, y: &ValAxis, y2: Opti
         }
         let zero = if y.scale.min <= 0.0 && y.scale.max >= 0.0 { 0.0 } else { y.scale.min };
         let y0 = plot.bottom() - y.scale.frac(zero) * plot.h;
-        ctx.hline(plot.x, plot.right(), y0, ctx.style.axis, 0.75);
+        ctx.base_hline(plot, y0);
         match cat {
             CatAxis::Table(..) => {}
             CatAxis::Labels(l, outer) => {
@@ -180,7 +180,7 @@ pub(super) fn frame(ctx: &mut Ctx, area: Bx, cat: CatAxis, y: &ValAxis, y2: Opti
                 }
                 if s.min <= 0.0 && s.max >= 0.0 {
                     let xx = plot.x + s.frac(0.0) * plot.w;
-                    ctx.vline(xx, plot.y, plot.bottom(), ctx.style.axis, 0.75);
+                    ctx.base_vline(plot, xx);
                 }
             }
         }
@@ -208,7 +208,7 @@ pub(super) fn frame(ctx: &mut Ctx, area: Bx, cat: CatAxis, y: &ValAxis, y2: Opti
         for (i, (v, t)) in ylabels.iter().enumerate() {
             let xx = plot.x + y.scale.frac(*v) * plot.w;
             if grid {
-                ctx.vline(xx, plot.y, plot.bottom(), ctx.style.grid.0, ctx.style.grid.1);
+                ctx.grid_vline(plot, xx);
             }
             if i % k == 0 {
                 ctx.text(xx, plot.bottom() + 3.0, t, ls, ctx.style.text, (HAlign::Center, VAlign::Top));
@@ -216,7 +216,7 @@ pub(super) fn frame(ctx: &mut Ctx, area: Bx, cat: CatAxis, y: &ValAxis, y2: Opti
         }
         let zero = if y.scale.min <= 0.0 && y.scale.max >= 0.0 { 0.0 } else { y.scale.min };
         let x0 = plot.x + y.scale.frac(zero) * plot.w;
-        ctx.vline(x0, plot.y, plot.bottom(), ctx.style.axis, 0.75);
+        ctx.base_vline(plot, x0);
         let n = labels.len().max(1);
         let ch = plot.h / n as f32;
         let k = ((lh / ch.max(1e-3)).ceil() as usize).clamp(1, n);

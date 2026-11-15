@@ -548,7 +548,7 @@ pub(super) fn radar(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx) {
             } else if let Some(p) = ring.first().copied() {
                 ring.push(p);
             }
-            ctx.line(ring, ctx.style.grid.0, ctx.style.grid.1);
+            ctx.grid_path(ring);
         }
         if ti % every == 0 {
             ctx.text(cx - 3.0, cy - rr, &f.format(t, Some(sc.step)), LABEL_SIZE * 0.9, ctx.style.text, (HAlign::Right, VAlign::Middle));
@@ -557,7 +557,7 @@ pub(super) fn radar(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx) {
     let step = ncat.div_ceil(72).max(1);
     for j in (0..ncat).step_by(step) {
         let a = ang(j);
-        ctx.line(vec![[cx, cy], pt(a, r)], ctx.style.grid.0, ctx.style.grid.1);
+        ctx.grid_path(vec![[cx, cy], pt(a, r)]);
         let p = pt(a, r + 6.0);
         let (sa, ca) = (a.sin(), a.cos());
         let align = if sa > 0.1 {

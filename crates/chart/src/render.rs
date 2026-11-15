@@ -170,6 +170,36 @@ impl Ctx<'_> {
     fn vline(&mut self, x: f32, y0: f32, y1: f32, color: Rgba, width: f32) {
         self.line(vec![[x, y0], [x, y1]], color, width);
     }
+
+    pub(crate) fn grid_path(&mut self, pts: Vec<[f32; 2]>) {
+        let (color, width) = self.style.grid;
+        if pts.len() >= 2 {
+            self.out.push(Prim::Line { pts, color, width, dash: true });
+        }
+    }
+
+    pub(crate) fn base_line(&mut self, pts: Vec<[f32; 2]>) {
+        let (color, width) = self.style.baseline;
+        if pts.len() >= 2 {
+            self.out.push(Prim::Line { pts, color, width, dash: false });
+        }
+    }
+
+    pub(crate) fn grid_hline(&mut self, area: Bx, y: f32) {
+        self.grid_path(vec![[area.x, y], [area.right(), y]]);
+    }
+
+    pub(crate) fn grid_vline(&mut self, area: Bx, x: f32) {
+        self.grid_path(vec![[x, area.y], [x, area.bottom()]]);
+    }
+
+    pub(crate) fn base_hline(&mut self, area: Bx, y: f32) {
+        self.base_line(vec![[area.x, y], [area.right(), y]]);
+    }
+
+    pub(crate) fn base_vline(&mut self, area: Bx, x: f32) {
+        self.base_line(vec![[x, area.y], [x, area.bottom()]]);
+    }
 }
 
 /// The faded far stop of a sheen: same hue, alpha at GRADIENT_SHEEN_ALPHA.
