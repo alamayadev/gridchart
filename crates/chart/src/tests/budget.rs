@@ -31,7 +31,7 @@ fn series_rects(prims: &[Prim], color: Rgba) -> Vec<(f32, f32, f32, f32)> {
     prims
         .iter()
         .filter_map(|p| match p {
-            Prim::Rect { x, y, w, h, fill: Some(f), .. } if *f == color => Some((*x, *y, *w, *h)),
+            Prim::Rect { x, y, w, h, fill: Some(f), .. } if f.start() == color => Some((*x, *y, *w, *h)),
             _ => None,
         })
         .collect()

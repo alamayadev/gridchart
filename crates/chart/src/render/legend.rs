@@ -1,4 +1,5 @@
 use super::frame::Bx;
+use super::shape::{self, MarkerGeometry, MarkerShape};
 use super::trend::supports_trendline;
 use super::{
     Chart, ChartData, ChartKind, Ctx, DOWN, HAlign, LABEL_SIZE, MAX_CATS, MAX_SERIES, MAX_TRENDLINES, Prim, Rgba, SeriesData, UP, VAlign, auto_name,
@@ -93,15 +94,23 @@ pub(super) fn swatch_w(sw: Swatch, s: f32) -> f32 {
     if sw == Swatch::Box { s } else { s * 2.0 }
 }
 
+/// A legend marker: the series hull, no ring (the white separator belongs to plot markers).
+fn draw_marker(ctx: &mut Ctx, cx: f32, cy: f32, r: f32, color: Rgba) {
+    match shape::geometry(MarkerShape::Circle, cx, cy, r) {
+        MarkerGeometry::Circle { r } => ctx.out.push(Prim::Circle { cx, cy, r, fill: Some(color), stroke: None }),
+        MarkerGeometry::Polygon(pts) => ctx.out.push(Prim::Polygon { pts, fill: color, stroke: None }),
+    }
+}
+
 pub(super) fn draw_swatch(ctx: &mut Ctx, sw: Swatch, x: f32, yc: f32, s: f32, color: Rgba) {
     match sw {
         Swatch::Box => ctx.rect(x, yc - s / 2.0, s, s, color, None),
         Swatch::Line => ctx.hline(x, x + 2.0 * s, yc, color, 2.0),
         Swatch::LineMarker => {
             ctx.hline(x, x + 2.0 * s, yc, color, 2.0);
-            ctx.out.push(Prim::Circle { cx: x + s, cy: yc, r: s * 0.35, fill: Some(color), stroke: None });
+            draw_marker(ctx, x + s, yc, s * 0.35, color);
         }
-        Swatch::Marker => ctx.out.push(Prim::Circle { cx: x + s, cy: yc, r: s * 0.4, fill: Some(color), stroke: None }),
+        Swatch::Marker => draw_marker(ctx, x + s, yc, s * 0.4, color),
     }
 }
 

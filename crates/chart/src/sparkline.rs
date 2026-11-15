@@ -4,7 +4,7 @@ use gridcraft_model::SparklineKind;
 
 use crate::render::{DOWN, finalize};
 use crate::resolve::MAX_POINTS;
-use crate::{Prim, Rgba};
+use crate::{Fill, Prim, Rgba};
 
 /// Draws a sparkline into a `w`×`h` box at the origin. Gaps (`None`) break lines; column and
 /// win/loss sparklines draw negatives in our "down" red.
@@ -74,7 +74,15 @@ pub fn render_sparkline(kind: SparklineKind, values: &[Option<f64>], color: Rgba
                 let top = fy(v);
                 let (y, hh) = (top.min(base), (top - base).abs().max(0.5));
                 let fill = if v < 0.0 { DOWN } else { color };
-                out.push(Prim::Rect { x: x0 + j as f32 * slot + (slot - bw) / 2.0, y, w: bw, h: hh, fill: Some(fill), stroke: None, radius: 0.0 });
+                out.push(Prim::Rect {
+                    x: x0 + j as f32 * slot + (slot - bw) / 2.0,
+                    y,
+                    w: bw,
+                    h: hh,
+                    fill: Some(Fill::solid(fill)),
+                    stroke: None,
+                    radii: [0.0; 4],
+                });
             }
         }
     }

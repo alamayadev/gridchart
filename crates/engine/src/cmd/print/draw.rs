@@ -12,10 +12,22 @@ pub(super) fn rgb_of(c: Color, wb: &Workbook) -> Option<Rgb> {
     c.resolve(&wb.theme)
 }
 
-fn blend(fg: [u8; 4]) -> Rgb {
+/// Straight-alpha compositing of ink over an opaque surface. PDF is the only backend that
+/// composites, and it composites against the resolved chart card, never a hardcoded white.
+fn blend_over(fg: [u8; 4], bg: Rgb) -> Rgb {
     let a = fg[3] as u16;
-    let mix = |c: u8| ((c as u16 * a + 255 * (255 - a)) / 255) as u8;
-    [mix(fg[0]), mix(fg[1]), mix(fg[2])]
+    let mix = |i: usize| ((fg[i] as u16 * a + bg[i] as u16 * (255 - a)) / 255) as u8;
+    [mix(0), mix(1), mix(2)]
+}
+
+/// The surface a chart's ink sits on: the card primitive, which the renderer emits first, or the
+/// resolved default preset card when there is none.
+fn card_surface(prims: &[gridcraft_chart::Prim]) -> Rgb {
+    let card = match prims.first() {
+        Some(gridcraft_chart::Prim::Rect { fill: Some(f), .. }) => f.start(),
+        _ => gridcraft_chart::chart_style(0).card,
+    };
+    [card[0], card[1], card[2]]
 }
 
 /// The effective look of a cell: own style, table style, conditional formats.
@@ -102,25 +114,66 @@ impl Xf {
 
 /// Draws chart primitives onto a page.
 pub(super) fn draw_prims(pg: &mut Page, prims: &[gridcraft_chart::Prim], xf: Xf) {
-    use gridcraft_chart::{HAlign as H, Prim, VAlign as V};
+    use gridcraft_chart::{Fill, HAlign as H, Prim, VAlign as V};
     let k = xf.k;
+    let bg = card_surface(prims);
     for p in prims {
         match p {
-            Prim::Rect { x, y, w, h, fill, stroke, .. } => {
+            Prim::Rect { x, y, w, h, fill, stroke, radii } => {
                 let (px, py) = xf.p(*x, *y);
+                let (pw, ph) = (w * k, h * k);
+                let rr = radii.map(|v| (v * k).max(0.0));
+                let rounded = rr.iter().any(|v| *v > 0.0);
                 if let Some(f) = fill {
-                    pg.fill_rect(px, py, w * k, h * k, blend(*f));
+                    match f {
+                        Fill::Solid(c) => {
+                            let rgb = blend_over(*c, bg);
+                            if rounded {
+                                pg.rounded_rect(px, py, pw, ph, rr, Some(rgb), None);
+                            } else {
+                                pg.fill_rect(px, py, pw, ph, rgb);
+                            }
+                        }
+                        Fill::Linear { from, to, start, end } => {
+                            // The stops are composited against the card here, so the shading
+                            // itself paints opaque and needs no graphics state.
+                            let (near, far) = (blend_over(*from, bg), blend_over(*to, bg));
+                            let (sx, sy) = xf.p(start[0], start[1]);
+                            let (ex, ey) = xf.p(end[0], end[1]);
+                            pg.save();
+                            if rounded {
+                                pg.clip_rounded_rect(px, py, pw, ph, rr);
+                            } else {
+                                pg.clip_rect(px, py, pw, ph);
+                            }
+                            // D-03: a ramp the page cannot hold still paints, in its near stop,
+                            // so the shape never disappears.
+                            if !pg.axial_shading([sx, sy], [ex, ey], near, far, 1.0) {
+                                if rounded {
+                                    pg.rounded_rect(px, py, pw, ph, rr, Some(near), None);
+                                } else {
+                                    pg.fill_rect(px, py, pw, ph, near);
+                                }
+                            }
+                            pg.restore();
+                        }
+                    }
                 }
                 if let Some((c, lw)) = stroke {
-                    pg.rect_stroke(px, py, w * k, h * k, (lw * k).max(0.1), blend(*c));
+                    let rgb = blend_over(*c, bg);
+                    if rounded {
+                        pg.rounded_rect(px, py, pw, ph, rr, None, Some((rgb, (lw * k).max(0.1))));
+                    } else {
+                        pg.rect_stroke(px, py, pw, ph, (lw * k).max(0.1), rgb);
+                    }
                 }
             }
             Prim::Line { pts, color, width, dash } => {
                 let d = if *dash { vec![3.0 * k, 2.0 * k] } else { vec![] };
-                pg.polyline(&xf.pts(pts), (width * k).max(0.1), blend(*color), &d);
+                pg.polyline(&xf.pts(pts), (width * k).max(0.1), blend_over(*color, bg), &d);
             }
             Prim::Polygon { pts, fill, stroke } => {
-                pg.polygon(&xf.pts(pts), Some(blend(*fill)), stroke.map(|(c, w)| (blend(c), (w * k).max(0.1))));
+                pg.polygon(&xf.pts(pts), Some(blend_over(*fill, bg)), stroke.map(|(c, w)| (blend_over(c, bg), (w * k).max(0.1))));
             }
             Prim::Wedge { cx, cy, r_outer, r_inner, a0, a1, fill, stroke } => {
                 let span = (a1 - a0).abs().min(std::f32::consts::TAU);
@@ -132,11 +185,11 @@ pub(super) fn draw_prims(pg: &mut Page, prims: &[gridcraft_chart::Prim], xf: Xf)
                 } else {
                     pts.push([*cx, *cy]);
                 }
-                pg.polygon(&xf.pts(&pts), Some(blend(*fill)), stroke.map(|(c, w)| (blend(c), (w * k).max(0.1))));
+                pg.polygon(&xf.pts(&pts), Some(blend_over(*fill, bg)), stroke.map(|(c, w)| (blend_over(c, bg), (w * k).max(0.1))));
             }
             Prim::Circle { cx, cy, r, fill, stroke } => {
                 let (px, py) = xf.p(*cx, *cy);
-                pg.circle(px, py, r * k, fill.map(blend), stroke.map(|(c, w)| (blend(c), (w * k).max(0.1))));
+                pg.circle(px, py, r * k, fill.map(|c| blend_over(c, bg)), stroke.map(|(c, w)| (blend_over(c, bg), (w * k).max(0.1))));
             }
             Prim::Text { x, y, text, size, color, bold, align, valign, rotation } => {
                 let font = if *bold { Font::HelveticaBold } else { Font::Helvetica };
@@ -154,7 +207,7 @@ pub(super) fn draw_prims(pg: &mut Page, prims: &[gridcraft_chart::Prim], xf: Xf)
                 };
                 let (sn, cs) = if rotation.is_finite() { rotation.sin_cos() } else { (0.0, 1.0) };
                 let (ax, ay) = xf.p(*x, *y);
-                pg.text_rotated(Point::new(ax + dx * cs - dy * sn, ay + dx * sn + dy * cs), size, font, blend(*color), text, *rotation);
+                pg.text_rotated(Point::new(ax + dx * cs - dy * sn, ay + dx * sn + dy * cs), size, font, blend_over(*color, bg), text, *rotation);
             }
         }
     }

@@ -1,10 +1,11 @@
 use super::frame::{Bx, CatAxis, ValAxis, frame, on, value_range};
 use super::legend::{cat_label, plot_kind};
 use super::lines::{decimate_area, draw_markers, draw_runs};
+use super::shape::MarkerShape;
 use super::trend::{draw_trend_labels, draw_trendlines, max_backward, max_forward, max_forward_slots, supports_trendline};
 use super::{
-    Chart, ChartData, ChartKind, Ctx, Fmt, HAlign, LABEL_SIZE, MAX_CATS, MAX_LABELS, MAX_LINE_PTS, MAX_MARKERS, MIN_BAR_PX, Prim, Rgba, Scale,
-    SeriesData, VAlign, WHITE, clean, nice_scale,
+    BAR_RADIUS_FRACTION, Chart, ChartData, ChartKind, Ctx, Fill, Fmt, HAlign, LABEL_SIZE, MARKER_RING_WEIGHT, MAX_CATS, MAX_LABELS, MAX_LINE_PTS,
+    MAX_MARKERS, MIN_BAR_PX, MIN_ROUNDED_BAR_PX, Prim, Rgba, Scale, SeriesData, VAlign, WHITE, clean, nice_scale,
 };
 
 // ---------------------------------------------------------------- cartesian (column/bar/line/area/combo)
@@ -61,11 +62,32 @@ struct BarRun {
     hi: f32,
     /// More than one bar was merged.
     merged: bool,
+    /// The fill of the run's first bar: a merged hairline run is a flat strip at this scale.
+    fill: Fill,
+}
+
+/// Corner radii for one bar, `[nw, ne, se, sw]` order: the two tips pointing away from the
+/// baseline are rounded, the two sitting on it stay square. Bars thinner than
+/// `MIN_ROUNDED_BAR_PX` on either axis, and merged hairline runs (whose envelope is what
+/// shows), stay square so a one-pixel strip does not become a blob.
+fn bar_radii(bw: f32, rect_len: f32, horizontal: bool, positive: bool, merged: bool) -> [f32; 4] {
+    let short = bw.min(rect_len.abs());
+    // A NaN or sub-pixel length stays square: a rounded tip needs room on both axes.
+    if merged || !short.is_finite() || short < MIN_ROUNDED_BAR_PX {
+        return [0.0; 4];
+    }
+    let r = (short * BAR_RADIUS_FRACTION).min(short / 2.0);
+    match (horizontal, positive) {
+        (false, true) => [r, r, 0.0, 0.0],
+        (false, false) => [0.0, 0.0, r, r],
+        (true, true) => [0.0, r, r, 0.0],
+        (true, false) => [r, 0.0, 0.0, r],
+    }
 }
 
 impl BarRun {
-    fn new(pos: f32, lo: f32, hi: f32) -> Self {
-        BarRun { bucket: pos.floor(), a0: pos, a1: pos, lo, hi, merged: false }
+    fn new(pos: f32, lo: f32, hi: f32, fill: Fill) -> Self {
+        BarRun { bucket: pos.floor(), a0: pos, a1: pos, lo, hi, merged: false, fill }
     }
     /// Whether `lo..hi` touches the run's value span; a disjoint bar would be joined by a filled gap.
     fn touches(&self, lo: f32, hi: f32) -> bool {
@@ -80,17 +102,54 @@ impl BarRun {
     }
     /// `band` is the part of the pixel column reserved for this series (`start`, `len`): in a
     /// clustered chart a merged run stays inside it, so the other series keep a visible strip.
-    fn draw(&self, ctx: &mut Ctx, bw: f32, horizontal: bool, color: Rgba, band: Option<(f32, f32)>) {
+    fn draw(&self, ctx: &mut Ctx, bw: f32, horizontal: bool, band: Option<(f32, f32)>) {
         let (a0, along) = match band {
             Some((start, len)) if self.merged => (self.bucket + start, len),
             _ => (self.a0, self.a1 - self.a0 + bw),
         };
-        if horizontal {
-            ctx.rect(self.lo, a0, self.hi - self.lo, along, color, None);
+        let radii = bar_radii(bw, self.hi - self.lo, horizontal, true, self.merged);
+        let span = if horizontal {
+            Bx { x: self.lo, y: a0, w: self.hi - self.lo, h: along }
         } else {
-            ctx.rect(a0, self.lo, along, self.hi - self.lo, color, None);
+            Bx { x: a0, y: self.lo, w: along, h: self.hi - self.lo }
+        };
+        ctx.rect_paint(span, Some(self.fill), None, radii);
+    }
+}
+
+/// The sheen of one bar: a ramp along the value axis from the baseline to the value end.
+fn bar_fill(ctx: &Ctx, color: Rgba, horizontal: bool, mid: f32, base: f32, end: f32) -> Fill {
+    if horizontal { ctx.gradient_axis_h(color, mid, base, end) } else { ctx.gradient_axis_v(color, mid, base, end) }
+}
+
+/// Whether the value end of a bar is its far end: `y` grows downwards, `x` rightwards.
+fn bar_tip(horizontal: bool, base: f32, end: f32) -> bool {
+    if horizontal { end > base } else { end < base }
+}
+
+/// Radii for one bar: a segment inside a stack stays square.
+fn bar_radii_at(rounds: bool, bw: f32, len: f32, horizontal: bool, tip: bool, merged: bool) -> [f32; 4] {
+    if rounds { bar_radii(bw, len, horizontal, tip, merged) } else { [0.0; 4] }
+}
+
+/// For each category, the index of the series at the far end of its stack (`None` when the
+/// category has no stacked column, where every bar carries its own tip): only that segment rounds,
+/// or a stack bulges mid-air.
+fn stack_terminals(spans: &[Vec<Option<(f64, f64)>>], fams: &[Fam], ncat: usize) -> Vec<Option<usize>> {
+    let mut terminals = vec![None; ncat];
+    for (i, row) in spans.iter().enumerate() {
+        if !fams.get(i).is_some_and(|f| matches!(f, Fam::ColStack | Fam::Col100)) {
+            continue;
+        }
+        for (j, sp) in row.iter().enumerate().take(ncat) {
+            if sp.is_some()
+                && let Some(t) = terminals.get_mut(j)
+            {
+                *t = Some(i);
+            }
         }
     }
+    terminals
 }
 
 /// Whether bars of width `bw` are merged per pixel column (never when they carry data labels).
@@ -104,14 +163,22 @@ struct BarSink {
     run: Option<BarRun>,
     bw: f32,
     horizontal: bool,
-    color: Rgba,
     nslots: f32,
     k: f32,
 }
 
+/// One bar: its span on the value axis, its corner radii (only the tip of the far end of a stack
+/// rounds) and its paint.
+struct Bar {
+    lo: f32,
+    len: f32,
+    radii: [f32; 4],
+    fill: Fill,
+}
+
 impl BarSink {
-    fn new(bw: f32, horizontal: bool, color: Rgba, nslots: f32, k: f32) -> Self {
-        BarSink { run: None, bw, horizontal, color, nslots, k }
+    fn new(bw: f32, horizontal: bool, nslots: f32, k: f32) -> Self {
+        BarSink { run: None, bw, horizontal, nslots, k }
     }
     /// Start of this series' slot along the category axis, for the category centered at `c`.
     fn pos(&self, c: f32) -> f32 {
@@ -126,23 +193,22 @@ impl BarSink {
         })
     }
     /// Draws the bar at category center `c` spanning `lo..lo + len` on the value axis, or, when
-    /// `merge` is set, adds it to the current run.
-    fn bar(&mut self, ctx: &mut Ctx, merge: bool, c: f32, lo: f32, len: f32) {
+    /// `merge` is set, adds it to the current run. `positive` says the value end (the rounded
+    /// tip) is the far end of the span, which the caller knows from its own value sign.
+    fn bar(&mut self, ctx: &mut Ctx, merge: bool, c: f32, bar: Bar) {
+        let Bar { lo, len, radii, fill } = bar;
         let pos = self.pos(c);
         let band = self.band();
         if !merge {
-            if self.horizontal {
-                ctx.rect(lo, pos, len, self.bw, self.color, None);
-            } else {
-                ctx.rect(pos, lo, self.bw, len, self.color, None);
-            }
+            let r = if self.horizontal { Bx { x: lo, y: pos, w: len, h: self.bw } } else { Bx { x: pos, y: lo, w: self.bw, h: len } };
+            ctx.rect_paint(r, Some(fill), None, radii);
             return;
         }
         match &mut self.run {
             Some(m) if m.bucket == pos.floor() && m.touches(lo, lo + len) => m.add(pos, lo, lo + len),
             run => {
-                if let Some(m) = run.replace(BarRun::new(pos, lo, lo + len)) {
-                    m.draw(ctx, self.bw, self.horizontal, self.color, band);
+                if let Some(m) = run.replace(BarRun::new(pos, lo, lo + len, fill)) {
+                    m.draw(ctx, self.bw, self.horizontal, band);
                 }
             }
         }
@@ -150,7 +216,7 @@ impl BarSink {
     fn finish(self, ctx: &mut Ctx) {
         let band = self.band();
         if let Some(m) = self.run {
-            m.draw(ctx, self.bw, self.horizontal, self.color, band);
+            m.draw(ctx, self.bw, self.horizontal, band);
         }
     }
 }
@@ -298,6 +364,7 @@ pub(super) fn cartesian(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx
     let sec: Vec<bool> = data.series.iter().map(|s| s.secondary && any_primary && !horizontal).collect();
 
     let spans = series_spans(data, &fams, &sec, ncat);
+    let terminals = stack_terminals(&spans, &fams, ncat);
 
     let axes = axis_scales(data, &fams, &sec, &spans);
     let Some((s1, f1)) = axes.first() else { return };
@@ -385,14 +452,22 @@ pub(super) fn cartesian(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx
                     let k = slot_of.get(i).copied().unwrap_or(0) as f32;
                     // Hairline bars are merged per pixel column (their envelope is what shows).
                     let cull = merge_hairlines(bw, labels_on);
-                    let mut sink = BarSink::new(bw, horizontal, s.color, nslots, k);
+                    let mut sink = BarSink::new(bw, horizontal, nslots, k);
                     for (j, sp) in row.iter().enumerate() {
                         let Some((b, t)) = sp else { continue };
                         let (pb, pt) = (vpos(*b, &sc), vpos(*t, &sc));
                         let c = center(j);
                         let lo = pb.min(pt);
                         let len = (pb - pt).abs();
-                        sink.bar(ctx, cull, c, lo, len);
+                        // The ramp runs along the value axis, from the baseline to the value end;
+                        // the tip is the far end when the value grows away from the baseline.
+                        let mid = sink.pos(c) + bw / 2.0;
+                        // Only the far end of a stack rounds; every other segment stays square, and
+                        // an unstacked bar is always its own far end.
+                        let end = terminals.get(j).copied().flatten();
+                        let rounds = end.is_none() || end == Some(i);
+                        let radii = bar_radii_at(rounds, bw, len, horizontal, bar_tip(horizontal, pb, pt), cull);
+                        sink.bar(ctx, cull, c, Bar { lo, len, radii, fill: bar_fill(ctx, s.color, horizontal, mid, pb, pt) });
                         if labels_on && let Some(v) = s.values.get(j).copied().flatten() {
                             let t = fmt.format(v, None);
                             let stacked = fam != Fam::Col;
@@ -425,7 +500,7 @@ pub(super) fn cartesian(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx
                     draw_runs(ctx, &pts, s.color, 2.25, s.smooth.then_some(plot));
                     let k = kinds.get(i).copied().unwrap_or(ChartKind::Line);
                     if k == ChartKind::LineMarkers && cw >= 3.0 {
-                        draw_markers(ctx, pts.iter().flatten().copied(), 3.5, s.color);
+                        draw_markers(ctx, pts.iter().flatten().copied(), 3.5, s.color, MarkerShape::Circle);
                     }
                     if labels_on {
                         for (j, p) in pts.iter().enumerate() {
@@ -525,7 +600,7 @@ pub(super) fn scatter(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx) 
             let fill = [s.color[0], s.color[1], s.color[2], 0xC0];
             for (p, sz) in bubbles {
                 let r = ((sz / smax).sqrt() as f32 * rmax).max(1.0);
-                ctx.out.push(Prim::Circle { cx: p[0], cy: p[1], r, fill: Some(fill), stroke: Some((WHITE, 0.75)) });
+                ctx.out.push(Prim::Circle { cx: p[0], cy: p[1], r, fill: Some(fill), stroke: Some((WHITE, MARKER_RING_WEIGHT)) });
             }
         } else {
             let lines = chart.kind == ChartKind::ScatterLines || s.kind == ChartKind::ScatterLines;
@@ -533,7 +608,7 @@ pub(super) fn scatter(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx) 
                 draw_runs(ctx, &px, s.color, 2.0, s.smooth.then_some(plot));
             }
             if !lines || px.len() <= 500 {
-                draw_markers(ctx, px.iter().flatten().copied(), 3.5, s.color);
+                draw_markers(ctx, px.iter().flatten().copied(), 3.5, s.color, MarkerShape::Circle);
             }
         }
         if chart.data_labels && pts.len() <= MAX_LABELS {

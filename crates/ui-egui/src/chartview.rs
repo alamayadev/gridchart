@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use egui::epaint::{PathShape, PathStroke};
 use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Stroke, StrokeKind, pos2, vec2};
-use gridcraft_chart::{HAlign, Prim, VAlign};
+use gridcraft_chart::{Fill, HAlign, Prim, VAlign};
 use gridcraft_engine::model::{Anchor, ObjKind, ObjRef, ShapeKind, Sheet, Workbook};
 
 use crate::SheetApp;
@@ -14,6 +14,92 @@ use crate::theme::{self, Tokens};
 
 fn rgba(c: [u8; 4]) -> Color32 {
     Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3])
+}
+/// Shortest ramp axis that is still a direction. The chart layer degrades a shorter one before a
+/// primitive is built; this is the local backstop, because `paint_prims` is public.
+const MIN_RAMP_SPAN: f32 = 1.0e-4;
+
+/// `[nw, ne, se, sw]` chart-space radii as egui takes them: scaled, rounded, and clamped to the
+/// range `CornerRadius` can hold, with a hostile value treated as a square corner.
+fn corner_radius(radii: [f32; 4], z: f32) -> egui::CornerRadius {
+    let px = |v: f32| {
+        let v = v * z;
+        if v.is_finite() { v.round().clamp(0.0, 255.0) as u8 } else { 0 }
+    };
+    egui::CornerRadius { nw: px(radii[0]), ne: px(radii[1]), se: px(radii[2]), sw: px(radii[3]) }
+}
+
+/// One colour of the ramp. The ends are the stop colours exactly: an interpolation that lands on
+/// `t = 1.0` need not reproduce the far stop to the last bit, so both ends return early (D-01).
+fn ramp_colour(from: Color32, to: Color32, t: f32) -> Color32 {
+    if t <= 0.0 {
+        return from;
+    }
+    if t >= 1.0 {
+        return to;
+    }
+    let (a, b) = (from.to_srgba_unmultiplied(), to.to_srgba_unmultiplied());
+    let mix = |i: usize| (f32::from(a[i]) + (f32::from(b[i]) - f32::from(a[i])) * t).round().clamp(0.0, 255.0) as u8;
+    Color32::from_rgba_unmultiplied(mix(0), mix(1), mix(2), mix(3))
+}
+
+/// The outline of a rounded rectangle, clockwise from the top-left corner: a corner whose radius
+/// cannot fill a pixel stays a single point, the others become an arc of 4 to 8 segments. Each
+/// radius is honoured on its own (02-02-04).
+fn rounded_outline(r: Rect, radius: egui::CornerRadius) -> Vec<Pos2> {
+    use std::f32::consts::{FRAC_PI_2, PI};
+
+    let limit = if r.width().is_finite() && r.height().is_finite() { (r.width().min(r.height()) * 0.5).max(0.0) } else { 0.0 };
+    let rad = |v: u8| f32::from(v).clamp(0.0, limit);
+    let (nw, ne, se, sw) = (rad(radius.nw), rad(radius.ne), rad(radius.se), rad(radius.sw));
+    let mut out = Vec::with_capacity(4 * 9);
+    // Twelve o’clock to three for a top-right corner, and so on: the direction the chart
+    // rasterizer and the PDF page trace the same corner.
+    // Twelve o clock to three for a top-right corner, and so on: the direction the chart rasterizer
+    // and the PDF page trace the same corner.
+    corner_outline(&mut out, r.left() + nw, r.top() + nw, nw, 3.0 * FRAC_PI_2);
+    corner_outline(&mut out, r.right() - ne, r.top() + ne, ne, 0.0);
+    corner_outline(&mut out, r.right() - se, r.bottom() - se, se, FRAC_PI_2);
+    corner_outline(&mut out, r.left() + sw, r.bottom() - sw, sw, PI);
+    out
+}
+
+/// Pushes one corner: its single point under half a pixel, otherwise a quarter turn clockwise in
+/// screen coordinates starting at `a0`.
+fn corner_outline(out: &mut Vec<Pos2>, cx: f32, cy: f32, rad: f32, a0: f32) {
+    if rad < 0.5 {
+        out.push(pos2(cx, cy));
+        return;
+    }
+    let segments = ((rad * 0.5).ceil() as usize).clamp(4, 8);
+    for i in 0..=segments {
+        let a = a0 + std::f32::consts::FRAC_PI_2 * (i as f32 / segments as f32);
+        out.push(pos2(cx + rad * a.sin(), cy - rad * a.cos()));
+    }
+}
+
+/// A rectangle filled with a linear ramp: a fan of triangles over its rounded outline, each vertex
+/// coloured by its own projection onto the axis (the same formula the rasterizer uses, so all four
+/// backends agree along the ramp). The hub is the rect centre, so a rounded tip keeps its arc.
+fn ramp_mesh(r: Rect, radius: egui::CornerRadius, from: Color32, to: Color32, a: Pos2, b: Pos2) -> egui::Mesh {
+    let mut mesh = egui::Mesh::default();
+    let d = b - a;
+    let len_sq = d.length_sq();
+    let colour_at = |p: Pos2| {
+        let off = p - a;
+        let t = if len_sq > 0.0 && len_sq.is_finite() { ((off.x * d.x + off.y * d.y) / len_sq).clamp(0.0, 1.0) } else { 0.0 };
+        ramp_colour(from, to, t)
+    };
+    let outline = rounded_outline(r, radius);
+    for &p in &outline {
+        mesh.colored_vertex(p, colour_at(p));
+    }
+    let hub = outline.len() as u32;
+    mesh.colored_vertex(r.center(), colour_at(r.center()));
+    for i in 0..hub {
+        mesh.add_triangle(hub, 1 + i, 1 + (i + 1) % hub);
+    }
+    mesh
 }
 
 struct EguiMeasure<'a> {
@@ -48,13 +134,27 @@ pub fn paint_prims(p: &Painter, origin: Pos2, prims: &[Prim], z: f32) {
     let pt = |x: f32, y: f32| pos2(origin.x + x * z, origin.y + y * z);
     for prim in prims {
         match prim {
-            Prim::Rect { x, y, w, h, fill, stroke, radius } => {
+            Prim::Rect { x, y, w, h, fill, stroke, radii } => {
                 let r = Rect::from_min_size(pt(*x, *y), vec2(w * z, h * z));
-                if let Some(f) = fill {
-                    p.rect_filled(r, radius * z, rgba(*f));
+                let chart_radii = radii.map(|v| if v.is_finite() { v } else { 0.0 });
+                let radius = corner_radius(chart_radii, z);
+                match fill {
+                    Some(Fill::Solid(c)) => {
+                        p.rect_filled(r, radius, rgba(*c));
+                    }
+                    Some(f @ Fill::Linear { from, to, start, end }) => {
+                        let (a, b) = (pt(start[0], start[1]), pt(end[0], end[1]));
+                        let len_sq = (b - a).length_sq();
+                        if len_sq.is_finite() && len_sq > MIN_RAMP_SPAN {
+                            p.add(egui::Shape::mesh(ramp_mesh(r, radius, rgba(*from), rgba(*to), a, b)));
+                        } else {
+                            p.rect_filled(r, radius, rgba(f.start()));
+                        }
+                    }
+                    None => {}
                 }
                 if let Some((c, wd)) = stroke {
-                    p.rect_stroke(r, radius * z, Stroke::new(wd * z.max(0.5), rgba(*c)), StrokeKind::Inside);
+                    p.rect_stroke(r, radius, Stroke::new(wd * z.max(0.5), rgba(*c)), StrokeKind::Inside);
                 }
             }
             Prim::Line { pts, color, width, dash } => {
@@ -619,7 +719,7 @@ pub(crate) fn ink_color(line: Color32, width_pt: f32) -> Color32 {
 pub(crate) mod tests {
     use std::cell::Cell;
 
-    use gridcraft_chart::Measure;
+    use gridcraft_chart::{Fill, Measure};
 
     use super::*;
 
@@ -666,8 +766,16 @@ pub(crate) mod tests {
             let style = gridcraft_chart::chart_style(id);
             let bar = gridcraft_chart::chart_style_preset(id)[0];
             let prims = vec![
-                Prim::Rect { x: 0.0, y: 0.0, w: 480.0, h: 288.0, fill: Some(style.card), stroke: Some((style.card_border, 1.0)), radius: 0.0 },
-                Prim::Rect { x: 40.0, y: 40.0, w: 60.0, h: 200.0, fill: Some(bar), stroke: None, radius: 0.0 },
+                Prim::Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 480.0,
+                    h: 288.0,
+                    fill: Some(Fill::solid(style.card)),
+                    stroke: Some((style.card_border, 1.0)),
+                    radii: [0.0; 4],
+                },
+                Prim::Rect { x: 40.0, y: 40.0, w: 60.0, h: 200.0, fill: Some(Fill::solid(bar)), stroke: None, radii: [0.0; 4] },
             ];
             let ctx = egui::Context::default();
             let mut out = ctx.run_ui(Default::default(), |ui| paint_prims(ui.painter(), pos2(0.0, 0.0), &prims, 1.0));
@@ -678,5 +786,160 @@ pub(crate) mod tests {
             seen.push((rgba(style.card), rgba(bar)));
         }
         assert_ne!(seen[0], seen[1], "the dark preset paints a different surface and ramp");
+    }
+
+    /// All vertex colours of the meshes painted, in paint order. Each mesh appends its fan hub last,
+    /// and the hub is not part of the outline, so the list starts and ends on the ramp stops.
+    fn mesh_colours(out: &egui::FullOutput) -> Vec<Color32> {
+        let mut colours = Vec::new();
+        for cs in &out.shapes {
+            if let egui::Shape::Mesh(m) = &cs.shape {
+                let outline = m.vertices.len().saturating_sub(1);
+                colours.extend(m.vertices.iter().take(outline).map(|v| v.color));
+            }
+        }
+        colours
+    }
+
+    fn gradient_bar(fill: Fill) -> Vec<Prim> {
+        vec![Prim::Rect { x: 0.0, y: 0.0, w: 20.0, h: 100.0, fill: Some(fill), stroke: None, radii: [0.0; 4] }]
+    }
+
+    /// D-01 (egui leg): the stop colours at both ends of the ramp are exact, not re-derived.
+    #[test]
+    fn a_gradient_bar_paints_a_mesh_with_the_exact_end_vertex_colours() {
+        let (from, to) = ([200u8, 10, 10, 255], [10u8, 10, 200, 255]);
+        let prims = gradient_bar(Fill::Linear { from, to, start: [0.0, 0.0], end: [0.0, 100.0] });
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(Default::default(), |ui| paint_prims(ui.painter(), pos2(0.0, 0.0), &prims, 1.0));
+        let colours = mesh_colours(&out);
+        out.textures_delta.clear();
+        // A fan over the outline interpolates a two-stop ramp exactly: every vertex takes the colour
+        // its own projection gives, so the shared hub never bends the ramp away from the axis.
+        assert!(colours.len() >= 4, "the fan outlines the bar, got {} vertices", colours.len());
+        assert_eq!(colours.first(), Some(&rgba(from)), "the near stop is exact");
+        assert_eq!(colours.last(), Some(&rgba(to)), "the far stop is exact");
+        assert!(colours.iter().all(|c| *c == rgba(from) || *c == rgba(to) || (c.r() >= 10 && c.r() <= 200)), "no colour outside the ramp");
+    }
+    /// 02-02-04: a gradient bar keeps its rounded tips in the app. The mesh is a fan over the
+    /// rounded outline, so every corner radius cuts its corner away and a vertex still sits on each
+    /// arc, while the vertex colours keep the exact ramp stops.
+    #[test]
+    fn a_gradient_bar_keeps_every_corner_radius_in_the_mesh() {
+        let (from, to) = ([200u8, 10, 10, 255], [10u8, 10, 200, 255]);
+        let radii = [12.0, 0.0, 8.0, 4.0];
+        let prims = vec![Prim::Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 40.0,
+            h: 100.0,
+            fill: Some(Fill::Linear { from, to, start: [20.0, 0.0], end: [20.0, 100.0] }),
+            stroke: None,
+            radii,
+        }];
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(Default::default(), |ui| paint_prims(ui.painter(), pos2(0.0, 0.0), &prims, 1.0));
+        let verts: Vec<(Pos2, Color32)> = out
+            .shapes
+            .iter()
+            .filter_map(|cs| match &cs.shape {
+                egui::Shape::Mesh(m) => Some(m.vertices.iter().map(|v| (v.pos, v.color))),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        out.textures_delta.clear();
+        assert_eq!(corner_radius(radii, 1.0), egui::CornerRadius { nw: 12, ne: 0, se: 8, sw: 4 });
+
+        let hub = verts.last().map(|(p, _)| *p);
+        let outline: Vec<(Pos2, Color32)> = verts[..verts.len().saturating_sub(1)].to_vec();
+        assert!(outline.len() > 8, "the outline is tessellated, got {} vertices", outline.len());
+
+        // Each rounded corner: its centre and radius. A vertex of the cut-out square that the arc
+        // removes would sit further than the radius from the centre, so none may.
+        let arcs = [(pos2(12.0, 12.0), 12.0f32), (pos2(32.0, 92.0), 8.0), (pos2(4.0, 96.0), 4.0)];
+        let inside = |p: Pos2, c: Pos2, rad: f32| (p.x - c.x).abs() <= rad && (p.y - c.y).abs() <= rad;
+        for (c, rad) in arcs {
+            let corner: Vec<Pos2> = outline.iter().map(|(p, _)| *p).filter(|p| inside(*p, c, rad)).collect();
+            assert!(!corner.is_empty(), "corner at {c:?} with radius {rad} has no vertices");
+            assert!(corner.iter().all(|p| p.distance(c) <= rad + 0.5), "corner at {c:?} keeps its square point");
+            assert!(corner.iter().any(|p| (p.distance(c) - rad).abs() <= 0.5), "corner at {c:?} has no arc");
+        }
+        // The north-east corner takes no radius, so its square point stays: the radii are independent.
+        assert!(outline.iter().any(|(p, _)| *p == pos2(40.0, 0.0)), "the square corner is still a point");
+        assert!(hub.is_some(), "the fan has a hub");
+
+        let at = |y: f32| outline.iter().filter(|(p, _)| (p.y - y).abs() < 1e-3).map(|(_, c)| *c).collect::<Vec<Color32>>();
+        let (top, bottom) = (at(0.0), at(100.0));
+        assert!(!top.is_empty() && !bottom.is_empty());
+        assert!(top.iter().all(|c| *c == rgba(from)), "the near stop is exact at the ramp start");
+        assert!(bottom.iter().all(|c| *c == rgba(to)), "the far stop is exact at the ramp end");
+    }
+
+    /// RTL sheets move a chart as a rigid object to a mirrored origin, so the vertex colours carry
+    /// the ramp and never depend on where the chart sits on the sheet.
+    #[test]
+    fn a_gradient_inside_an_rtl_sheet_keeps_its_vertex_colours() {
+        let (from, to) = ([200u8, 10, 10, 255], [10u8, 10, 200, 255]);
+        let prims = gradient_bar(Fill::Linear { from, to, start: [0.0, 0.0], end: [0.0, 100.0] });
+        let ctx = egui::Context::default();
+        let mut lhs = ctx.run_ui(Default::default(), |ui| paint_prims(ui.painter(), pos2(0.0, 0.0), &prims, 1.0));
+        let mut rhs = ctx.run_ui(Default::default(), |ui| paint_prims(ui.painter(), pos2(300.0, 50.0), &prims, 1.0));
+        let (a, b) = (mesh_colours(&lhs), mesh_colours(&rhs));
+        lhs.textures_delta.clear();
+        rhs.textures_delta.clear();
+        assert_eq!(a, b, "a rigid move changes no vertex colour");
+        assert!(!a.is_empty());
+    }
+
+    /// The `[nw, ne, se, sw]` radii reach egui field for field, scaled by the zoom.
+    #[test]
+    fn per_corner_radii_map_to_corner_radius_fields() {
+        let prims =
+            vec![Prim::Rect { x: 0.0, y: 0.0, w: 40.0, h: 40.0, fill: Some(Fill::solid([1, 2, 3, 255])), stroke: None, radii: [4.0, 0.0, 8.0, 2.0] }];
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(Default::default(), |ui| paint_prims(ui.painter(), pos2(0.0, 0.0), &prims, 2.0));
+        let radii: Vec<egui::CornerRadius> = out
+            .shapes
+            .iter()
+            .filter_map(|cs| match &cs.shape {
+                egui::Shape::Rect(r) => Some(r.corner_radius),
+                _ => None,
+            })
+            .collect();
+        out.textures_delta.clear();
+        assert_eq!(radii, vec![egui::CornerRadius { nw: 8, ne: 0, se: 16, sw: 4 }]);
+    }
+
+    /// PRIM-03 (egui leg): the shared in-code fixture reaches the canvas — the ramp's exact stops as
+    /// mesh vertices, and the ring colour as the stroke of every marker hull.
+    #[test]
+    fn the_fixture_paints_gradient_stops_and_ringed_markers() {
+        use gridcraft_chart::fixture;
+
+        let prims = gridcraft_chart::parity_fixture();
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(Default::default(), |ui| paint_prims(ui.painter(), pos2(0.0, 0.0), &prims, 1.0));
+        let colours = mesh_colours(&out);
+        // A filled path and its stroke are two shapes; a ring is a stroke with a width.
+        let rings: Vec<Color32> = out
+            .shapes
+            .iter()
+            .filter_map(|cs| match &cs.shape {
+                egui::Shape::Circle(c) => Some((c.stroke.width, c.stroke.color)),
+                egui::Shape::Path(p) => match p.stroke.color {
+                    egui::epaint::ColorMode::Solid(c) => Some((p.stroke.width, c)),
+                    egui::epaint::ColorMode::UV(_) => None,
+                },
+                _ => None,
+            })
+            .filter(|(w, _)| *w > 0.0)
+            .map(|(_, c)| c)
+            .collect();
+        out.textures_delta.clear();
+        assert_eq!(colours.first(), Some(&rgba(fixture::FROM)), "the near stop is exact");
+        assert_eq!(colours.last(), Some(&rgba(fixture::TO)), "the far stop is exact");
+        assert_eq!(rings.len(), 5, "one ring per marker hull, got {rings:?}");
+        assert!(rings.iter().all(|c| *c == rgba(fixture::RING)), "every ring is the ring colour, got {rings:?}");
     }
 }

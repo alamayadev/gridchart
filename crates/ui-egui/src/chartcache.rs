@@ -177,7 +177,7 @@ mod tests {
     }
 
     fn rect_prim(w: f32) -> Vec<Prim> {
-        vec![Prim::Rect { x: 0.0, y: 0.0, w, h: 1.0, fill: None, stroke: None, radius: 0.0 }]
+        vec![Prim::Rect { x: 0.0, y: 0.0, w, h: 1.0, fill: None, stroke: None, radii: [0.0; 4] }]
     }
 
     fn line_prim(points: usize) -> Vec<Prim> {
@@ -257,6 +257,38 @@ mod tests {
         let big = cache.get(1, &w, 0, 0, (1.0, 1.0), || line_prim(MAX_BYTES / 4 / std::mem::size_of::<[f32; 2]>() + 1000));
         assert!(!big.is_empty());
         assert_eq!((cache.len(), cache.bytes), (0, 0));
+    }
+
+    /// D-04: a gradient fill is a fixed-size `Copy` value inside the primitive, so it is charged like
+    /// a solid one - one `Prim` and no per-chart heap. The cap constants (MAX_BYTES, MAX_ENTRIES) are
+    /// unchanged and no second accounting exists.
+    #[test]
+    fn the_new_payload_is_charged_and_costs_no_more_than_a_solid_fill() {
+        use gridcraft_chart::{Fill, Rgba};
+
+        // A tag plus the widest variant: two stop colours and one axis (two points).
+        assert_eq!(std::mem::size_of::<Fill>(), 28, "one tag (4) + two RGBA stops (8) + one axis (16)");
+        assert!(
+            std::mem::size_of::<Fill>() <= std::mem::size_of::<u32>() + 2 * std::mem::size_of::<Rgba>() + 2 * std::mem::size_of::<[f32; 2]>(),
+            "the payload is the stops and the axis, never a Vec or a box",
+        );
+        // The primitive did not grow: a ramp replaced the flat colour in place.
+        assert_eq!(std::mem::size_of::<Prim>(), 72, "the pre-phase Prim size, unchanged");
+
+        let rect = |fill: Fill| Prim::Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0, fill: Some(fill), stroke: None, radii: [0.0; 4] };
+        let solid = rect(Fill::solid([1, 2, 3, 255]));
+        let ramp = rect(Fill::Linear { from: [1, 2, 3, 255], to: [4, 5, 6, 255], start: [0.0, 0.0], end: [0.0, 10.0] });
+        let charged = |p: Prim| {
+            let mut cache = ChartCache::default();
+            let w = wb();
+            cache.get(1, &w, 0, 0, (1.0, 1.0), || vec![p]);
+            cache.bytes
+        };
+        let (flat, graded) = (charged(solid.clone()), charged(ramp.clone()));
+        assert_eq!(flat, prim_bytes(&solid), "a solid fill is charged exactly its primitive");
+        assert_eq!(graded, prim_bytes(&ramp), "and so is a ramp");
+        assert!(graded >= flat, "a ramp is never charged less than a solid fill of the same geometry");
+        assert!(graded <= flat + std::mem::size_of::<Prim>(), "a ramp costs at most one primitive over a solid fill: {graded} vs {flat}",);
     }
 
     #[test]

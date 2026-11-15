@@ -700,7 +700,7 @@ fn style_preset_reaches_the_primitives() {
         let d = resolve(&wb, 0, &c);
         let prims = render(&c, &d, 480.0, 288.0, &ApproxMeasure);
         let card = match prims.first() {
-            Some(Prim::Rect { fill: Some(f), .. }) => *f,
+            Some(Prim::Rect { fill: Some(f), .. }) => f.start(),
             other => panic!("prims[0] should be the card, got {other:?}"),
         };
         let ink = prims
@@ -783,14 +783,18 @@ fn rasterize_bar_center_has_bar_color() {
     let bars: Vec<_> = prims
         .iter()
         .filter_map(|p| match p {
-            Prim::Rect { x, y, w, h, fill: Some(f), .. } if *f == east && *w > 10.0 => Some((*x, *y, *w, *h)),
+            Prim::Rect { x, y, w, h, fill: Some(f), .. } if f.start() == east && *w > 10.0 => Some((*x, *y, *w, *h)),
             _ => None,
         })
         .collect();
     assert_eq!(bars.len(), 6);
     for (x, y, bw, bh) in bars {
         let px = pixel(&img, w, (x + bw / 2.0) as u32, (y + bh / 2.0) as u32);
-        assert_eq!(px, east);
+        // A bar is a two-stop sheen since plan 02-01: the ramp's `from` stop is the series colour
+        // at the baseline and its `to` stop keeps that hue at 75% alpha, so the bar centre
+        // composites the series colour lightened towards the white background.
+        assert!(px[0] >= east[0] && px[1] >= east[1] && px[2] >= east[2], "the bar centre keeps the series hue: {px:?}");
+        assert_eq!(px[3], 255);
     }
     // Primitive-level checks.
     let img = rasterize(&[Prim::Circle { cx: 10.0, cy: 10.0, r: 5.0, fill: Some([255, 0, 0, 255]), stroke: None }], 20, 20, [0, 0, 0, 0]);
@@ -818,7 +822,7 @@ fn rasterize_bar_center_has_bar_color() {
 fn rasterize_does_not_panic_on_negative_rect_extents() {
     let red = [255, 0, 0, 255];
     for (w, h) in [(-10.0, 10.0), (10.0, -10.0), (-10.0, -10.0), (f32::NAN, f32::NAN)] {
-        let rect = Prim::Rect { x: 5.0, y: 5.0, w, h, fill: Some(red), stroke: Some((red, 2.0)), radius: 0.0 };
+        let rect = Prim::Rect { x: 5.0, y: 5.0, w, h, fill: Some(Fill::solid(red)), stroke: Some((red, 2.0)), radii: [0.0; 4] };
         let img = rasterize(&[rect], 20, 20, [0, 0, 0, 0]);
         assert_eq!(img.len(), 20 * 20 * 4);
     }
@@ -1311,7 +1315,7 @@ fn treemap_and_histogram_shapes() {
         series: vec![series("h", &vals, [10, 20, 30, 255], ChartKind::Histogram)],
     };
     let prims = render(&chart(ChartKind::Histogram), &d, 600.0, 400.0, &ApproxMeasure);
-    let bins = prims.iter().filter(|p| matches!(p, Prim::Rect { fill: Some([10, 20, 30, 255]), .. })).count();
+    let bins = prims.iter().filter(|p| matches!(p, Prim::Rect { fill: Some(f), .. } if f.start() == [10, 20, 30, 255])).count();
     assert_eq!(bins, 10);
 }
 
@@ -1325,7 +1329,18 @@ fn histogram_boundary_values_match_interval_labels() {
             series: vec![series("h", vals, [10, 20, 30, 255], ChartKind::Histogram)],
         };
         let prims = render(&chart(ChartKind::Histogram), &d, 600.0, 400.0, &ApproxMeasure);
-        prims.iter().filter_map(|p| if let Prim::Rect { h, fill: Some([10, 20, 30, 255]), .. } = p { Some(*h) } else { None }).collect()
+        prims
+            .iter()
+            .filter_map(|p| {
+                if let Prim::Rect { h, fill: Some(f), .. } = p
+                    && f.start() == [10, 20, 30, 255]
+                {
+                    Some(*h)
+                } else {
+                    None
+                }
+            })
+            .collect()
     };
     // Labels are "[0, 7.5]" and "(7.5, 15.0]": 7.5 belongs to the first bar, so the counts are 2 and 1.
     let h = heights(&[0.0, 7.5, 15.0]);
@@ -1652,7 +1667,7 @@ fn a_huge_trendline_forecast_does_not_collapse_the_columns() {
     let prims = render(&c, &d, 600.0, 400.0, &m);
     assert_sane(&prims, 600.0, 400.0);
     let widths: Vec<f32> =
-        prims.iter().filter_map(|p| if let Prim::Rect { w, fill: Some(f), .. } = p { (*f == col).then_some(*w) } else { None }).collect();
+        prims.iter().filter_map(|p| if let Prim::Rect { w, fill: Some(f), .. } = p { (f.start() == col).then_some(*w) } else { None }).collect();
     assert_eq!(widths.len(), 5);
     assert!(widths.iter().all(|w| *w > 4.0), "columns stay visible: {widths:?}");
     let trend = lines_of(&prims, tc);
@@ -1675,7 +1690,7 @@ fn box_whisker_draws_each_series_quartile_method() {
     let heights: Vec<f32> = prims
         .iter()
         .filter_map(|p| match p {
-            Prim::Rect { h, fill, .. } if *fill == Some(color) => Some(*h),
+            Prim::Rect { h, fill, .. } if fill.as_ref().map(Fill::start) == Some(color) => Some(*h),
             _ => None,
         })
         .collect();
@@ -1847,4 +1862,386 @@ fn volatile_defined_names_are_followed() {
     wb.sheets.push(Arc::new(gridcraft_model::Sheet::new("Other")));
     assert!(!has_volatile_series(&wb, 1, &with("=Dice")));
     assert!(has_volatile_series(&wb, 1, &with("=FreshClock")));
+}
+
+// ---------------------------------------------------------------- Fill / radii payload (02-01-01)
+
+#[test]
+fn payload_is_copy_copy_cheap_and_serde_round_trips() {
+    // Prim was 48 bytes before the payload change; a cache line of headroom is the budget.
+    assert!(std::mem::size_of::<Prim>() <= 112, "Prim grew to {}", std::mem::size_of::<Prim>());
+    // Fill is Copy and needs no heap: one colour, or two stops plus an axis. The payload is 24
+    // bytes, so with a discriminant and 4-byte alignment the enum is 28.
+    assert!(std::mem::size_of::<Fill>() <= 28, "Fill grew to {}", std::mem::size_of::<Fill>());
+    let ramp = Fill::Linear { from: [1, 2, 3, 255], to: [4, 5, 6, 128], start: [0.0, 10.0], end: [0.0, 0.0] };
+    let copied = ramp;
+    assert_eq!(copied, ramp, "Fill is Copy");
+    let json = serde_json::to_string(&ramp).expect("Fill serializes");
+    let back: Fill = serde_json::from_str(&json).expect("Fill deserializes");
+    assert_eq!(back, ramp, "a ramp survives a round trip: {json}");
+}
+
+#[test]
+fn a_solid_fill_answers_its_start_colour() {
+    let a = [9, 8, 7, 200];
+    assert_eq!(Fill::Solid(a).start(), a);
+    assert_eq!(Fill::Linear { from: a, to: [1, 2, 3, 4], start: [0.0, 0.0], end: [10.0, 0.0] }.start(), a);
+    assert_eq!(Fill::Linear { from: a, to: a, start: [0.0, 0.0], end: [10.0, 0.0] }.start(), a);
+}
+
+#[test]
+fn the_producer_gives_a_bar_rounded_outward_tips() {
+    let prims = render(&chart(ChartKind::ColumnClustered), &sample(ChartKind::ColumnClustered), 640.0, 400.0, &ApproxMeasure);
+    let up = prims.iter().any(|p| {
+        matches!(p, Prim::Rect { radii, .. }
+        if radii[0] > 0.0 && radii[1] > 0.0 && radii[2] == 0.0 && radii[3] == 0.0)
+    });
+    let down = prims.iter().any(|p| {
+        matches!(p, Prim::Rect { radii, .. }
+        if radii[2] > 0.0 && radii[3] > 0.0 && radii[0] == 0.0 && radii[1] == 0.0)
+    });
+    assert!(up, "a positive column rounds the two tips away from the baseline");
+    assert!(down, "a negative column rounds the two tips below the baseline");
+}
+
+// ---------------------------------------------------------------- sanitizer: ramps and radii (02-01-02)
+
+/// A rect at the box origin with the given paint and radii, for the finalize pass.
+fn rect_of(fill: Paint, radii: [f32; 4], w: f32, h: f32) -> Prim {
+    Prim::Rect { x: 0.0, y: 0.0, w, h, fill, stroke: None, radii }
+}
+
+/// The single surviving rect of a one-primitive finalize pass in a `w`x`h` box.
+fn only_rect(p: Prim, w: f32, h: f32) -> Prim {
+    let mut out = crate::render::finalize(vec![p], w, h);
+    assert_eq!(out.len(), 1, "bad payload degrades, only absent geometry is dropped (D-03)");
+    out.pop().expect("one primitive")
+}
+
+fn radii_of(p: &Prim) -> [f32; 4] {
+    match p {
+        Prim::Rect { radii, .. } => *radii,
+        other => panic!("expected a rect, got {other:?}"),
+    }
+}
+
+fn fill_of(p: &Prim) -> Paint {
+    match p {
+        Prim::Rect { fill, .. } => *fill,
+        other => panic!("expected a rect, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_zero_length_gradient_degrades_to_its_start_colour() {
+    let from = [200, 20, 10, 255];
+    let ramp = Fill::Linear { from, to: [10, 20, 200, 128], start: [22.0, 22.0], end: [22.0, 22.0] };
+    let out = only_rect(rect_of(Some(ramp), [0.0; 4], 60.0, 60.0), 100.0, 100.0);
+    assert_eq!(fill_of(&out), Some(Fill::Solid(from)), "an unresolvable ramp degrades to its start colour");
+}
+
+#[test]
+fn hostile_radii_become_sharp_corners_not_panics() {
+    let out = only_rect(rect_of(None, [f32::NAN, f32::INFINITY, -2.0, 1e30], 40.0, 40.0), 100.0, 100.0);
+    assert_eq!(radii_of(&out), [0.0; 4], "a hostile radii array degrades to square corners");
+}
+
+#[test]
+fn radii_are_clamped_independently_to_half_the_short_side() {
+    let wide = only_rect(rect_of(None, [50.0, 3.0, 1.0, 0.0], 100.0, 20.0), 100.0, 20.0);
+    assert_eq!(radii_of(&wide), [10.0, 3.0, 1.0, 0.0], "each corner clamps on its own");
+    let square = only_rect(rect_of(None, [6.0; 4], 9.0, 9.0), 9.0, 9.0);
+    assert_eq!(radii_of(&square), [4.5; 4], "half the short side is the bound");
+}
+
+#[test]
+fn precision_is_exact_at_the_endpoints_and_midpoint_rounds_deterministically() {
+    let ramp = Fill::Linear { from: [7, 9, 11, 200], to: [3, 5, 7, 100], start: [0.0, 0.0], end: [10.0, 10.0] };
+    assert_eq!(ramp.start(), [7, 9, 11, 200], "the start stop is exact, not rounded");
+    let out = only_rect(rect_of(None, [4.55; 4], 9.10, 9.10), 9.10, 9.10);
+    let r = radii_of(&out)[0];
+    assert_eq!(r.to_bits(), 4.55f32.to_bits(), "a radius on the bound clamps exactly, got {r}");
+}
+
+// ---------------------------------------------------------------- bar tips, ramps and markers (02-01-03)
+
+/// One series over one category per value, for the bar-shape tests.
+fn solo(values: &[f64], kind: ChartKind) -> ChartData {
+    ChartData {
+        category_levels: vec![],
+        palette: vec![],
+        categories: (0..values.len()).map(|i| format!("C{i}")).collect(),
+        series: vec![series("S", values, [200, 80, 40, 255], kind)],
+    }
+}
+
+/// The radii of every rect a chart emitted, in order.
+fn rect_radii(prims: &[Prim]) -> Vec<[f32; 4]> {
+    prims
+        .iter()
+        .filter_map(|p| match p {
+            Prim::Rect { radii, .. } => Some(*radii),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn bar_radii_point_outward_for_both_signs() {
+    let mut c = chart(ChartKind::ColumnClustered);
+    c.data_labels = false;
+    let prims = render(&c, &solo(&[3.0, -3.0], ChartKind::ColumnClustered), 640.0, 400.0, &ApproxMeasure);
+    let radii = rect_radii(&prims);
+    let up = radii.iter().find(|r| r[0] > 0.0).copied().expect("a positive column rounds away from the axis");
+    assert!(up[0] == up[1] && up[2] == 0.0 && up[3] == 0.0, "top corners only, got {up:?}");
+    let down = radii.iter().find(|r| r[2] > 0.0).copied().expect("a negative column rounds below the axis");
+    assert!(down[2] == down[3] && down[0] == 0.0 && down[1] == 0.0, "bottom corners only, got {down:?}");
+
+    let mut hb = chart(ChartKind::BarClustered);
+    hb.data_labels = false;
+    let prims = render(&hb, &solo(&[3.0, -3.0], ChartKind::BarClustered), 640.0, 400.0, &ApproxMeasure);
+    let radii = rect_radii(&prims);
+    let pos = radii.iter().find(|r| r[1] > 0.0).copied().expect("a positive bar rounds at its far end");
+    assert!(pos[1] == pos[2] && pos[0] == 0.0 && pos[3] == 0.0, "right corners only, got {pos:?}");
+    let neg = radii.iter().find(|r| r[0] > 0.0).copied().expect("a negative bar rounds at its far end");
+    assert!(neg[0] == neg[3] && neg[1] == 0.0 && neg[2] == 0.0, "left corners only, got {neg:?}");
+}
+
+#[test]
+fn a_stacked_middle_segment_stays_square() {
+    let mut c = chart(ChartKind::ColumnStacked);
+    c.data_labels = false;
+    let d = ChartData {
+        category_levels: vec![],
+        palette: vec![],
+        categories: vec!["C0".into()],
+        series: vec![
+            series("A", &[10.0], [200, 80, 40, 255], ChartKind::ColumnStacked),
+            series("B", &[20.0], [20, 96, 130, 255], ChartKind::ColumnStacked),
+            series("C", &[30.0], [25, 107, 36, 255], ChartKind::ColumnStacked),
+        ],
+    };
+    let prims = render(&c, &d, 640.0, 400.0, &ApproxMeasure);
+    let radii = rect_radii(&prims);
+    let rounded = radii.iter().filter(|r| r[0] > 0.0 || r[2] > 0.0).count();
+    assert_eq!(rounded, 1, "only the segment at the far end of the stack rounds");
+    assert!(radii.iter().filter(|r| r[0] == 0.0 && r[2] == 0.0).all(|r| *r == [0.0; 4]), "an interior segment is square");
+}
+
+#[test]
+fn hairline_bars_stay_square() {
+    let mut c = chart(ChartKind::ColumnClustered);
+    c.data_labels = false;
+    c.legend = LegendPos::None;
+    let values: Vec<f64> = (0..400).map(|i| (i % 7) as f64 + 1.0).collect();
+    let d = ChartData {
+        category_levels: vec![],
+        palette: vec![],
+        categories: (0..values.len()).map(|i| format!("C{i}")).collect(),
+        series: vec![series("S", &values, [200, 80, 40, 255], ChartKind::ColumnClustered)],
+    };
+    let prims = render(&c, &d, 120.0, 300.0, &ApproxMeasure);
+    let radii = rect_radii(&prims);
+    assert!(!radii.is_empty(), "the chart still draws");
+    assert!(radii.iter().all(|r| *r == [0.0; 4]), "a merged hairline run has no roundable tip");
+}
+
+#[test]
+fn a_bar_ramp_runs_along_the_value_axis() {
+    let mut c = chart(ChartKind::ColumnClustered);
+    c.data_labels = false;
+    let prims = render(&c, &solo(&[3.0, 5.0], ChartKind::ColumnClustered), 640.0, 400.0, &ApproxMeasure);
+    let ramps: Vec<&Fill> = prims
+        .iter()
+        .filter_map(|p| match p {
+            Prim::Rect { fill: Some(f @ Fill::Linear { .. }), .. } => Some(f),
+            _ => None,
+        })
+        .collect();
+    assert!(!ramps.is_empty(), "bars carry a ramp");
+    for f in ramps {
+        if let Fill::Linear { from, to, start, end } = f {
+            assert_eq!(start[0], end[0], "a column's ramp is vertical");
+            assert!(end[1] < start[1], "it runs from the baseline up to the value end");
+            assert_eq!(from[3] - to[3], 64, "a 255-alpha series fades by GRADIENT_SHEEN_ALPHA");
+        }
+    }
+}
+
+#[test]
+fn markers_keep_the_white_ring_at_the_lock_weight() {
+    let white = [255, 255, 255, 255];
+    for style in [0, 4] {
+        let mut c = chart(ChartKind::LineMarkers);
+        c.style = style;
+        let prims = render(&c, &sample(ChartKind::LineMarkers), 640.0, 400.0, &ApproxMeasure);
+        let rings: Vec<(Rgba, f32)> = prims
+            .iter()
+            .filter_map(|p| match p {
+                Prim::Circle { stroke: Some(s), .. } | Prim::Polygon { stroke: Some(s), .. } => Some(*s),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rings.len(), 18, "one ringed marker per point on style {style}");
+        assert!(rings.iter().all(|s| *s == (white, 0.75)), "the ring is white at the lock weight on style {style}");
+    }
+}
+
+#[test]
+fn every_marker_shape_has_a_distinct_hull_and_the_same_ring() {
+    use crate::render::shape::{MarkerGeometry, all_shapes, geometry};
+    let mut geometries = Vec::new();
+    let mut hulls: Vec<Vec<[f32; 2]>> = Vec::new();
+    for shape in all_shapes() {
+        let g = geometry(shape, 10.0, 20.0, 3.0);
+        match &g {
+            MarkerGeometry::Circle { r } => assert_eq!(*r, 3.0, "a circle keeps its radius"),
+            MarkerGeometry::Polygon(pts) => {
+                assert!((3..=4).contains(&pts.len()), "a hull is at most four points: {pts:?}");
+                hulls.push(pts.clone());
+            }
+        }
+        geometries.push(g);
+    }
+    assert_eq!(hulls.len(), 4, "four hulls plus the circle");
+    for i in 0..hulls.len() {
+        for j in i + 1..hulls.len() {
+            assert_ne!(hulls[i], hulls[j], "hulls {i} and {j} are the same shape");
+        }
+    }
+    for i in 0..geometries.len() {
+        for j in i + 1..geometries.len() {
+            assert_ne!(geometries[i], geometries[j], "shapes {i} and {j} are the same");
+        }
+    }
+}
+
+#[test]
+fn legend_swatches_follow_the_marker_shape_without_a_ring() {
+    use crate::render::shape::{MarkerGeometry, MarkerShape, geometry};
+    let mut c = chart(ChartKind::LineMarkers);
+    c.legend = LegendPos::Bottom;
+    let prims = render(&c, &sample(ChartKind::LineMarkers), 640.0, 400.0, &ApproxMeasure);
+    let swatches: Vec<&Prim> = prims.iter().filter(|p| matches!(p, Prim::Circle { stroke: None, .. })).collect();
+    assert!(!swatches.is_empty(), "a line legend draws a marker swatch");
+    for p in swatches {
+        if let Prim::Circle { cx, cy, r, .. } = p {
+            match geometry(MarkerShape::Circle, *cx, *cy, *r) {
+                MarkerGeometry::Circle { r: want } => assert_eq!(*r, want),
+                MarkerGeometry::Polygon(_) => panic!("a circle swatch stays a circle"),
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- central sanitizer (02-01-04)
+
+#[test]
+fn the_fixture_survives_hostile_numbers_without_panicking() {
+    let prims = vec![
+        Prim::Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 60.0,
+            h: 40.0,
+            fill: Some(Fill::Linear { from: [10, 20, 30, 255], to: [40, 50, 60, 128], start: [f32::NAN, f32::NAN], end: [60.0, 0.0] }),
+            stroke: Some(([1, 2, 3, 255], 1.0)),
+            radii: [f32::NAN, f32::INFINITY, -1.0, 1e30],
+        },
+        Prim::Rect { x: 10.0, y: 10.0, w: 0.0, h: 20.0, fill: Some(Fill::solid([5, 6, 7, 255])), stroke: None, radii: [0.0; 4] },
+        Prim::Circle { cx: 20.0, cy: 20.0, r: 0.0, fill: Some([8, 9, 10, 255]), stroke: None },
+        Prim::Text {
+            x: 5.0,
+            y: 5.0,
+            text: String::new(),
+            size: 10.0,
+            color: [0, 0, 0, 255],
+            bold: false,
+            align: HAlign::Left,
+            valign: VAlign::Top,
+            rotation: 0.0,
+        },
+    ];
+    let out = crate::render::finalize(prims, 100.0, 80.0);
+    assert!(!out.is_empty(), "a shape is never dropped for a hostile fill or radius, only for having no geometry");
+    for p in &out {
+        if let Prim::Rect { w, h, radii, .. } = p {
+            assert!(radii.iter().all(|r| r.is_finite()), "finite radii, got {radii:?}");
+            assert!(radii.iter().all(|r| *r <= w.min(*h) / 2.0 + 1e-3), "radii inside the box, got {radii:?} for {w}x{h}");
+        }
+    }
+}
+
+// ------------------------------------------------------------------ the cross-backend fixture
+
+/// PRIM-03: the one in-code fixture reads the same in the pixel backend — exact stop colours at both
+/// ends of the ramp, the ring colour and the body colour of every marker hull, and a corner rounded
+/// on one side only.
+#[test]
+fn the_fixture_round_trips_through_the_rasteriser() {
+    let (w, h) = (fixture::WIDTH as u32, fixture::HEIGHT as u32);
+    let px = rasterize(&parity_fixture(), w, h, fixture::BACKGROUND);
+    assert_eq!(px.len(), (w * h * 4) as usize, "a full RGBA buffer");
+
+    for (i, [ring, body]) in fixture::MARKER_PROBES.iter().enumerate() {
+        assert_eq!(pixel(&px, w, ring[0], ring[1]), fixture::RING, "marker {i}: the ring band is the ring colour");
+        assert_eq!(pixel(&px, w, body[0], body[1]), fixture::MARKER_FILL, "marker {i}: the marker body is its own colour");
+    }
+
+    let [from, to] = fixture::GRADIENT_PROBES;
+    assert_eq!(pixel(&px, w, from[0], from[1]), fixture::FROM, "the ramp starts at its exact near stop");
+    assert_eq!(pixel(&px, w, to[0], to[1]), fixture::TO, "the ramp ends at its exact far stop");
+
+    let [rounded, square] = fixture::ASYMMETRIC_PROBES;
+    assert_eq!(pixel(&px, w, rounded[0], rounded[1]), fixture::BACKGROUND, "the rounded corner is cut out, not painted");
+    assert_eq!(pixel(&px, w, square[0], square[1]), fixture::ASYMMETRIC_FILL, "the square corner keeps the fill");
+}
+
+/// PRIM-03 / D-03: hostile stops, a non-finite axis and impossible radii degrade to a solid start
+/// colour and square corners, and the central pass drops nothing that has geometry.
+#[test]
+fn the_fixture_survives_a_hostile_gradient_and_radii_set() {
+    let (w, h) = (fixture::WIDTH as u32, fixture::HEIGHT as u32);
+    let near = [200u8, 10, 10, 255];
+    let flat = [90u8, 90, 200, 255];
+    let mut scene = parity_fixture();
+    let kept = scene.len();
+    scene.extend([
+        Prim::Rect {
+            x: 160.0,
+            y: 56.0,
+            w: 40.0,
+            h: 24.0,
+            fill: Some(Fill::Linear { from: near, to: [10, 200, 10, 255], start: [f32::NAN; 2], end: [f32::NAN; 2] }),
+            stroke: None,
+            radii: [0.0; 4],
+        },
+        Prim::Rect {
+            x: 160.0,
+            y: 88.0,
+            w: 40.0,
+            h: 24.0,
+            fill: Some(Fill::solid(flat)),
+            stroke: Some(([255, 255, 255, 255], 1.0)),
+            radii: [f32::NAN, -1.0, f32::INFINITY, 1e30],
+        },
+        Prim::Rect {
+            x: 204.0,
+            y: 56.0,
+            w: 24.0,
+            h: 24.0,
+            fill: Some(Fill::Linear { from: [10, 10, 10, 255], to: [250, 250, 250, 255], start: [216.0, 68.0], end: [216.0, 68.0] }),
+            stroke: None,
+            radii: [0.0; 4],
+        },
+    ]);
+
+    let finalised = crate::render::finalize(scene, fixture::WIDTH, fixture::HEIGHT);
+    assert_eq!(finalised.len(), kept + 3, "only a primitive with no geometry is dropped");
+
+    let px = rasterize(&finalised, w, h, fixture::BACKGROUND);
+    assert_eq!(px.len(), (w * h * 4) as usize, "a full buffer, never an empty one");
+    assert_eq!(pixel(&px, w, 161, 57), near, "a ramp with a non-finite axis degrades to its near stop");
+    assert_eq!(pixel(&px, w, 161, 89), flat, "hostile radii degrade to square corners, not to a hole");
+    assert_eq!(pixel(&px, w, 210, 60), [10, 10, 10, 255], "a zero-length ramp degrades to its near stop");
 }

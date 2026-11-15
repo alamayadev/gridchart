@@ -402,6 +402,16 @@ impl ImageData {
     }
 }
 
+/// A linear gradient painted with an axial shading (`/ShadingType 2`, `/FunctionType 2`).
+struct ShadingData {
+    /// Chart-space endpoints of the ramp (y down, flipped by [`Page::y`] when written).
+    start: [f32; 2],
+    end: [f32; 2],
+    from: Rgb,
+    to: Rgb,
+    alpha: f32,
+}
+
 /// The part of the graphics state the writer tracks so that a style operator is only emitted
 /// when it changes. `None` = not set yet on this page (or since the last restore that undid it).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -446,6 +456,8 @@ pub struct Page {
     /// `save` calls refused at the nesting limit; the same number of `restore` calls are ignored.
     refused: u32,
     links: Vec<LinkAnnotation>,
+    /// Axial shadings used on this page; written as resource objects by [`PdfDoc::finish`].
+    shadings: Vec<ShadingData>,
 }
 
 /// Most bytes of content per page before further drawing is dropped (keeps hostile inputs from
@@ -460,6 +472,11 @@ const JOIN_MITER: u8 = 0;
 const JOIN_ROUND: u8 = 1;
 const MAX_PAGE_LINKS: usize = 4096;
 const MAX_LINK_URI_BYTES: usize = 4096;
+/// Shortest ramp axis that is still a direction; below it a gradient is a solid colour.
+const MIN_GRADIENT_SPAN: f32 = 1.0e-4;
+/// Most shadings per page. Each costs about 200 bytes of dictionary, so the content cap alone
+/// would admit millions of them.
+const MAX_PAGE_SHADINGS: usize = 65_536;
 
 impl Page {
     pub fn width(&self) -> f32 {
@@ -473,6 +490,10 @@ impl Page {
     }
     fn full(&self) -> bool {
         self.content.len() > MAX_PAGE_CONTENT
+    }
+    /// Bytes of content still allowed on this page (saturates at zero, never wraps).
+    pub fn content_room(&self) -> usize {
+        MAX_PAGE_CONTENT.saturating_sub(self.content.len())
     }
     fn op(&mut self, s: &str) {
         if !self.full() {
@@ -706,6 +727,103 @@ impl Page {
         self.op(&s);
     }
 
+    /// Appends a rounded rectangle path with independent corner radii (`[nw, ne, se, sw]`), y
+    /// down, as four cubic Béziers. A zero radius degenerates to the corner point.
+    fn rounded_path(&self, s: &mut String, x: f32, y: f32, w: f32, h: f32, r: [f32; 4]) {
+        const K: f32 = 0.552_284_8;
+        let [nw, ne, se, sw] = r;
+        let (x1, y1) = (x + w, y + h);
+        // PDF space is y up: the smaller y is the top edge.
+        let (top, bottom) = (self.y(y), self.y(y1));
+        let _ = write!(s, "{} {} m", n(x + nw), n(top));
+        let _ = write!(s, " {} {} l", n(x1 - ne), n(top));
+        let _ = write!(s, " {} {} {} {} {} {} c", n(x1 - ne + ne * K), n(top), n(x1), n(top - ne + ne * K), n(x1), n(top - ne));
+        let _ = write!(s, " {} {} l", n(x1), n(bottom + se));
+        let _ = write!(s, " {} {} {} {} {} {} c", n(x1), n(bottom + se - se * K), n(x1 - se + se * K), n(bottom), n(x1 - se), n(bottom));
+        let _ = write!(s, " {} {} l", n(x + sw), n(bottom));
+        let _ = write!(s, " {} {} {} {} {} {} c", n(x + sw - sw * K), n(bottom), n(x), n(bottom + sw - sw * K), n(x), n(bottom + sw));
+        let _ = write!(s, " {} {} l", n(x), n(top + nw));
+        let _ = write!(s, " {} {} {} {} {} {} c h", n(x), n(top + nw - nw * K), n(x + nw - nw * K), n(top), n(x + nw), n(top));
+    }
+
+    /// Corner radii clamped to the rectangle, with hostile values treated as square corners.
+    fn radii_of(w: f32, h: f32, radii: [f32; 4]) -> [f32; 4] {
+        let limit = (w.min(h) / 2.0).max(0.0);
+        radii.map(|v| if v.is_finite() { v.clamp(0.0, limit) } else { 0.0 })
+    }
+
+    /// Intersects the clip with a rectangle whose corners have independent radii (until the next
+    /// [`Page::restore`]).
+    pub fn clip_rounded_rect(&mut self, x: f32, y: f32, w: f32, h: f32, radii: [f32; 4]) {
+        if !finite(&[x, y, w, h]) || !extent(w) || !extent(h) || self.full() {
+            return;
+        }
+        let r = Page::radii_of(w, h, radii);
+        let mut s = String::new();
+        if r.iter().all(|v| *v == 0.0) {
+            let _ = write!(s, "{} {} {} {} re", n(x), n(self.y(y + h)), n(w), n(h));
+        } else {
+            self.rounded_path(&mut s, x, y, w, h, r);
+        }
+        s.push_str(" W n");
+        self.op(&s);
+    }
+
+    /// A rectangle with independent corner radii, filled and/or stroked. All-square corners keep
+    /// the compact `re` operator.
+    #[expect(clippy::too_many_arguments, reason = "the drawing API takes geometry, style and radii positionally")]
+    pub fn rounded_rect(&mut self, x: f32, y: f32, w: f32, h: f32, radii: [f32; 4], fill: Option<Rgb>, stroke: Option<(Rgb, f32)>) {
+        if !finite(&[x, y, w, h]) || !extent(w) || !extent(h) || (fill.is_none() && stroke.is_none()) || self.full() {
+            return;
+        }
+        let r = Page::radii_of(w, h, radii);
+        let mut s = String::new();
+        if let Some(c) = fill {
+            self.set_fill(&mut s, c);
+        }
+        if let Some((c, width)) = stroke {
+            self.set_stroke(&mut s, c, width, "", JOIN_MITER);
+        }
+        if r.iter().all(|v| *v == 0.0) {
+            let _ = write!(s, "{} {} {} {} re", n(x), n(self.y(y + h)), n(w), n(h));
+        } else {
+            self.rounded_path(&mut s, x, y, w, h, r);
+        }
+        s.push_str(match (fill.is_some(), stroke.is_some()) {
+            (true, true) => " B",
+            (true, false) => " f",
+            _ => " S",
+        });
+        self.op(&s);
+    }
+
+    /// Paints an axial gradient inside the current clip, from `start` to `end` (chart space, y
+    /// down).
+    ///
+    /// Returns `false` when the shading cannot be written — a degenerate axis, a full page, or no
+    /// room for its operators — so the caller paints `Fill::solid(from)` instead of dropping the
+    /// shape.
+    pub fn axial_shading(&mut self, start: [f32; 2], end: [f32; 2], from: Rgb, to: Rgb, alpha: f32) -> bool {
+        if !finite(&[start[0], start[1], end[0], end[1]]) || self.full() || self.shadings.len() >= MAX_PAGE_SHADINGS {
+            return false;
+        }
+        let (dx, dy) = (end[0] - start[0], end[1] - start[1]);
+        if !finite(&[dx, dy]) || (dx.abs() < MIN_GRADIENT_SPAN && dy.abs() < MIN_GRADIENT_SPAN) {
+            return false;
+        }
+        let mut s = String::new();
+        let _ = write!(s, "q 0 0 {} {} re W n /Sh{} sh Q", n(self.width.max(0.0)), n(self.height.max(0.0)), self.shadings.len());
+        if s.len().saturating_add(1) > self.content_room() {
+            return false;
+        }
+        self.content.push_str(&s);
+        self.content.push('\n');
+        // Painted without an `rg`, so the tracked fill colour is no longer in effect.
+        self.style.fill = None;
+        self.shadings.push(ShadingData { start, end, from, to, alpha });
+        true
+    }
+
     /// Text with its baseline starting at `(x, y)`.
     pub fn text(&mut self, x: f32, y: f32, size: f32, font: Font, color: Rgb, text: &str) {
         self.text_rotated(Point::new(x, y), size, font, color, text, 0.0);
@@ -905,6 +1023,45 @@ fn begin_obj(out: &mut Vec<u8>, offsets: &mut Vec<usize>, id: u32) {
 }
 
 /// Writes `id 0 obj <body> endobj`.
+/// Writes one object per shading on `page` (ids from `next`) and returns the resource dictionary
+/// body that names them.
+fn shadings_of(out: &mut Vec<u8>, offsets: &mut Vec<usize>, next: &mut u32, page: &Page) -> String {
+    let mut refs = String::new();
+    for (k, sh) in page.shadings.iter().enumerate() {
+        let id = *next;
+        *next += 1;
+        let _ = write!(refs, "/Sh{k} {id} 0 R ");
+        shading_obj(out, offsets, id, page, sh);
+    }
+    if refs.is_empty() { String::new() } else { format!(" /Shading << {refs}>>") }
+}
+
+/// One axial shading object: `/ShadingType 2` with a two-stop exponential function.
+fn shading_obj(out: &mut Vec<u8>, offsets: &mut Vec<usize>, id: u32, page: &Page, sh: &ShadingData) {
+    let mut c0 = String::new();
+    let mut c1 = String::new();
+    for v in sh.from {
+        push_unit(&mut c0, v);
+        c0.push(' ');
+    }
+    for v in sh.to {
+        push_unit(&mut c1, v);
+        c1.push(' ');
+    }
+    let a = if sh.alpha.is_finite() { sh.alpha.clamp(0.0, 1.0) } else { 1.0 };
+    let coords = format!("{} {} {} {}", n(sh.start[0]), n(page.y(sh.start[1])), n(sh.end[0]), n(page.y(sh.end[1])));
+    dict_obj(
+        out,
+        offsets,
+        id,
+        &format!(
+            "<< /ShadingType 2 /ColorSpace /DeviceRGB /Coords [{coords}] /Function << /FunctionType 2 /Domain [0 1] /C0 [{c0}] /C1 [{c1}] /N 1 >> /ExtGState << /CA {} /ca {} >> >>",
+            n(a),
+            n(a)
+        ),
+    );
+}
+
 fn dict_obj(out: &mut Vec<u8>, offsets: &mut Vec<usize>, id: u32, body: &str) {
     begin_obj(out, offsets, id);
     out.extend_from_slice(body.as_bytes());
@@ -954,6 +1111,7 @@ impl PdfDoc {
             #[cfg(test)]
             image_comparisons: 0,
             links: Vec::new(),
+            shadings: Vec::new(),
             style: Style::default(),
             saved: Vec::new(),
             refused: 0,
@@ -1093,6 +1251,7 @@ impl PdfDoc {
                 };
                 let _ = write!(xobjects, "/Im{} {} 0 R ", k + 1, img_id);
             }
+            let shades = shadings_of(&mut out, &mut offsets, &mut next, page);
             let content_id = next;
             let page_id = next + 1;
             next += 2;
@@ -1115,11 +1274,12 @@ impl PdfDoc {
                 &mut offsets,
                 page_id,
                 &format!(
-                    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {} {}] /Resources << /Font << {}>>{} >> /Contents {} 0 R{} >>",
+                    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {} {}] /Resources << /Font << {}>>{}{} >> /Contents {} 0 R{} >>",
                     n(page.width),
                     n(page.height),
                     font_dict,
                     xo,
+                    shades,
                     content_id,
                     annots
                 ),

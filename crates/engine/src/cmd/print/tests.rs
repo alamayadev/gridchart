@@ -15,6 +15,33 @@ fn pdf_of(s: &mut Session, p: Json) -> (Vec<u8>, u64) {
 fn contains(hay: &[u8], needle: &str) -> bool {
     hay.windows(needle.len()).any(|w| w == needle.as_bytes())
 }
+/// The PDF writer's number format, mirrored so an assertion reads the real content stream.
+fn unit(v: u8) -> String {
+    let m = (u32::from(v) * 1000 + 127) / 255;
+    match m {
+        0 => "0".to_string(),
+        1000 => "1".to_string(),
+        _ => {
+            let mut s = format!("0.{m:03}");
+            while s.ends_with('0') {
+                s.pop();
+            }
+            s
+        }
+    }
+}
+fn fill_op(c: [u8; 4]) -> String {
+    format!("{} {} {} rg", unit(c[0]), unit(c[1]), unit(c[2]))
+}
+/// A shading function operand list, as `/C0 [` and `/C1 [` write it.
+fn rgb_op(c: [u8; 3]) -> String {
+    format!("{} {} {}", unit(c[0]), unit(c[1]), unit(c[2]))
+}
+/// Straight-alpha compositing over an opaque surface, mirrored from the PDF draw path.
+fn over(fg: [u8; 4], bg: [u8; 3]) -> [u8; 3] {
+    let a = u16::from(fg[3]);
+    [0, 1, 2].map(|i| ((u16::from(fg[i]) * a + u16::from(bg[i]) * (255 - a)) / 255) as u8)
+}
 
 #[test]
 fn chart_data_table_prints_formatted_values_and_follows_recalculation() {
@@ -961,6 +988,30 @@ fn chart_budget_counts_path_points_and_drops_charts_that_do_not_fit() {
     let mut pics = PicCache { chart_prims: MAX_CHART_PRIMS - 10, ..Default::default() };
     assert!(pics.chart((0, 1), || vec![line(1000)]).is_none());
     assert!(pics.charts.is_empty() && pics.rejected_charts.contains(&(0, 1)));
+
+    // D-04: the new payload is inline and fixed-size, so a two-stop ramp costs one unit and a ringed
+    // hull costs its outline points plus one - nothing per stop, nothing per ring. Every ceiling
+    // stays where it was: MAX_CHART_PRIMS here, MAX_BYTES and MAX_ENTRIES in chartcache,
+    // MAX_SCAN_WORK and MAX_PIXELS in the rasterizer, MAX_PAGE_SVG_BYTES in the SVG emitter.
+    let ramp = Prim::Rect {
+        x: 0.0,
+        y: 0.0,
+        w: 10.0,
+        h: 10.0,
+        fill: Some(gridcraft_chart::Fill::Linear { from: [1, 2, 3, 255], to: [4, 5, 6, 255], start: [0.0, 0.0], end: [0.0, 10.0] }),
+        stroke: None,
+        radii: [0.0; 4],
+    };
+    let hull =
+        Prim::Polygon { pts: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]], fill: [1, 2, 3, 255], stroke: Some(([255, 255, 255, 255], 2.0)) };
+    assert_eq!(chart_cost(&[ramp, hull]), 1 + 5, "a ramp is one unit; a four-point hull is its points plus one");
+    // The shared fixture costs exactly what its geometry says, and a budget of exactly that much
+    // admits it: the ring and the ramp have no budget of their own.
+    let fixture = gridcraft_chart::parity_fixture();
+    let cost = chart_cost(&fixture);
+    assert_eq!(cost, 3 + 1 + 5 + 5 + 4 + 4, "three rects, one circle and four triangular/square hulls");
+    let mut pics = PicCache { chart_prims: MAX_CHART_PRIMS - cost, ..Default::default() };
+    assert!(pics.chart((0, 2), || fixture.clone()).is_some(), "the fixture fits the budget its own accounted cost leaves");
 }
 
 /// STYL-04: one resolved scene carries the preset's tokens all the way out — into the built-in
@@ -972,24 +1023,6 @@ fn style_tokens_reach_the_raster_svg_and_pdf_backends() {
 
     fn hex(c: [u8; 4]) -> String {
         format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2])
-    }
-    /// The PDF writer's number format, mirrored so the assertion reads the real content stream.
-    fn unit(v: u8) -> String {
-        let m = (u32::from(v) * 1000 + 127) / 255;
-        match m {
-            0 => "0".to_string(),
-            1000 => "1".to_string(),
-            _ => {
-                let mut s = format!("0.{m:03}");
-                while s.ends_with('0') {
-                    s.pop();
-                }
-                s
-            }
-        }
-    }
-    fn fill_op(c: [u8; 4]) -> String {
-        format!("{} {} {} rg", unit(c[0]), unit(c[1]), unit(c[2]))
     }
 
     let mut s = s();
@@ -1007,7 +1040,7 @@ fn style_tokens_reach_the_raster_svg_and_pdf_backends() {
             let data = gridcraft_chart::resolve(wb, 0, ch);
             let prims = gridcraft_chart::render(ch, &data, W as f32, H as f32, &super::draw::PdfMeasure);
             let card = match prims.first() {
-                Some(gridcraft_chart::Prim::Rect { fill: Some(f), .. }) => *f,
+                Some(gridcraft_chart::Prim::Rect { fill: Some(f), .. }) => f.start(),
                 other => panic!("the first primitive of a chart is the card, got {other:?}"),
             };
             let pixels = gridcraft_chart::rasterize(&prims, W, H, [255, 255, 255, 255]);
@@ -1027,4 +1060,175 @@ fn style_tokens_reach_the_raster_svg_and_pdf_backends() {
     assert_ne!(seen[0].0, seen[1].0, "the light and dark presets paint different cards");
     assert_ne!(seen[0].1, seen[1].1, "and different series ramps");
     assert_ne!(seen[0].2, seen[1].2, "and different PDF content streams");
+
+    // D-03: the same hostile scene, backend by backend. A zero-length ramp and all-NaN radii paint
+    // one solid, square-cornered shape - never a hole, never a dangling gradient reference, never a
+    // panic. Each backend keeps its own ceiling at the value it had: MAX_PAGE_SVG_BYTES in the SVG
+    // emitter, MAX_PAGE_CONTENT and MAX_PAGE_SHADINGS in the PDF writer, MAX_SCAN_WORK and
+    // MAX_PIXELS in the rasteriser.
+    use gridcraft_chart::Prim;
+    let hostile = vec![
+        Prim::Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 20.0,
+            h: 20.0,
+            fill: Some(gridcraft_chart::Fill::Linear { from: [200, 10, 10, 255], to: [10, 10, 200, 255], start: [4.0, 4.0], end: [4.0, 4.0] }),
+            stroke: None,
+            radii: [f32::NAN; 4],
+        },
+        Prim::Rect { x: 0.5, y: 30.0, w: 0.4, h: 1.0, fill: Some(gridcraft_chart::Fill::solid([10, 200, 40, 255])), stroke: None, radii: [-4.0; 4] },
+    ];
+    let pixels = gridcraft_chart::rasterize(&hostile, 64, 64, [0, 0, 0, 0]);
+    assert_eq!(pixels.len(), 64 * 64 * 4, "the rasteriser returns a sized buffer for a hostile scene");
+    let probe = (10 * 64 + 10) * 4;
+    assert_eq!(&pixels[probe..probe + 4], &[200, 10, 10, 255], "a zero-length ramp paints its from stop");
+    let svg = crate::chart_svg::prims_svg(&hostile, 64.0, 64.0, "");
+    assert!(svg.contains("<rect ") && !svg.contains("rx="), "the hostile rect is a square element, not a hole: {svg}");
+    assert!(!svg.contains("url(#"), "a degenerate ramp never references a dangling gradient: {svg}");
+    let mut doc = gridcraft_pdf::PdfDoc::new();
+    {
+        let pg = doc.add_page(64.0, 64.0);
+        super::draw::draw_prims(pg, &hostile, super::draw::Xf { ox: 0.0, oy: 0.0, k: 1.0 });
+    }
+    let bytes = doc.finish();
+    assert!(contains(&bytes, &fill_op([200, 10, 10, 255])), "the PDF still writes the from stop as a fill");
+    assert!(contains(&bytes, "re f"), "and the shape is still painted, not dropped");
+    let (chart_pdf, _) = pdf_of(&mut s, json!({}));
+    assert!(contains(&chart_pdf, "re f"), "and a real chart's scene still paints");
+}
+/// PRIM-01/PRIM-02: one scene, four backends. The same `Fill::Linear` bars reach the PDF as
+/// native axial shading and the SVG as `userSpaceOnUse` gradient definitions, with the exact
+/// stop colours at both ends (D-01) and no per-backend colour re-derivation.
+#[test]
+fn a_gradient_bar_reaches_the_pdf_shading_and_the_svg_defs() {
+    use gridcraft_chart::Prim;
+    const W: u32 = 480;
+    const H: u32 = 288;
+
+    fn hex(c: [u8; 4]) -> String {
+        format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2])
+    }
+
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "A1", "values": [["Fruit", "Qty"], ["Apples", 3], ["Pears", 5]]})).unwrap();
+    s.execute("insert.chart", json!({"range": "A1:B3", "type": "column"})).unwrap();
+
+    let (card, ramp, svg) = {
+        let d = s.doc().unwrap();
+        let wb = &d.wb;
+        let ch = &wb.active().unwrap().charts[0];
+        let data = gridcraft_chart::resolve(wb, 0, ch);
+        let prims = gridcraft_chart::render(ch, &data, W as f32, H as f32, &super::draw::PdfMeasure);
+        let ramp = prims
+            .iter()
+            .find_map(|p| match p {
+                Prim::Rect { fill: Some(f @ gridcraft_chart::Fill::Linear { .. }), .. } => Some(*f),
+                _ => None,
+            })
+            .expect("a column bar carries a gradient ramp");
+        let card = match prims.first() {
+            Some(Prim::Rect { fill: Some(f), .. }) => f.start(),
+            other => panic!("the first primitive of a chart is the card, got {other:?}"),
+        };
+        let svg = crate::chart_svg::chart_svg(wb, 0, ch, "", crate::chart_svg::MAX_PAGE_SVG_BYTES).unwrap().unwrap();
+        (card, ramp, svg)
+    };
+    let gridcraft_chart::Fill::Linear { from, to, .. } = ramp else {
+        panic!("a bar ramp is a two-stop linear fill");
+    };
+
+    // SVG: a real gradient definition in user space, referenced by the bar, with the exact stops.
+    assert!(svg.contains("<linearGradient "), "the SVG defines a gradient");
+    assert!(svg.contains("gradientUnits=\"userSpaceOnUse\""), "in user space, not bounding-box space");
+    assert!(svg.contains("fill=\"url(#g0)\""), "and a bar fills with it");
+    assert!(svg.contains(&format!("<stop offset=\"0\" stop-color=\"{}\"", hex(from))), "the first stop is the exact from colour, got {svg}");
+    assert!(svg.contains(&format!("<stop offset=\"1\" stop-color=\"{}\"", hex(to))), "the last stop is the exact to colour");
+
+    // PDF: a native axial shading whose function operands are the card-composited stop colours.
+    let (pdf, _) = pdf_of(&mut s, json!({}));
+    let bg = [card[0], card[1], card[2]];
+    assert!(contains(&pdf, "/ShadingType 2"), "the gradient is vector axial shading");
+    assert!(contains(&pdf, "/Sh0 sh"), "a bar paints it");
+    assert!(contains(&pdf, &format!("/C0 [{} ", rgb_op(over(from, bg)))), "the from stop is exact, composited against the card");
+    assert!(contains(&pdf, &format!("/C1 [{} ", rgb_op(over(to, bg)))), "the to stop is exact, composited against the card");
+}
+
+/// STYL-04 / ROADMAP criterion 3: the only backend that composites is PDF, and it composites
+/// translucent ink against the resolved preset card, never a hardcoded white.
+#[test]
+fn translucent_ink_composites_against_the_preset_card_not_white() {
+    use gridcraft_chart::{Fill, Prim};
+    const W: u32 = 480;
+    const H: u32 = 288;
+    let ink = [12u8, 34, 56, 128];
+
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "A1", "values": [["x"], [1]]})).unwrap();
+    s.execute("insert.chart", json!({"range": "A1:A2", "type": "column"})).unwrap();
+    let mut seen = Vec::new();
+    for id in [0u32, 4] {
+        s.execute("chart.set", json!({"style": id})).unwrap();
+        let style = gridcraft_chart::chart_style(id);
+        let prims = vec![
+            Prim::Rect { x: 0.0, y: 0.0, w: W as f32, h: H as f32, fill: Some(Fill::solid(style.card)), stroke: None, radii: [0.0; 4] },
+            Prim::Rect { x: 10.0, y: 10.0, w: 100.0, h: 100.0, fill: Some(Fill::solid(ink)), stroke: None, radii: [0.0; 4] },
+        ];
+        let mut doc = gridcraft_pdf::PdfDoc::new();
+        {
+            let pg = doc.add_page(W as f32, H as f32);
+            super::draw::draw_prims(pg, &prims, super::draw::Xf { ox: 0.0, oy: 0.0, k: 1.0 });
+        }
+        let pdf = doc.finish();
+        let card = [style.card[0], style.card[1], style.card[2]];
+        let want = over(ink, card);
+        assert!(
+            contains(&pdf, &fill_op([want[0], want[1], want[2], 255])),
+            "style {id}: the translucent ink composites against the preset card {card:?}",
+        );
+        if card != [255, 255, 255] {
+            assert_ne!(want, over(ink, [255, 255, 255]), "style {id}: the card is not white, so the ink must not composite against white");
+        }
+        seen.push(want);
+    }
+    assert_ne!(seen[0], seen[1], "the light and dark presets composite the same ink differently");
+}
+
+/// PRIM-03: the shared in-code fixture is readable by the two vector backends too. One call, no
+/// golden file: the SVG rings every marker hull and defines the ramp's exact stops, and the PDF
+/// carries native axial shading plus a white ring stroke.
+#[test]
+fn the_fixture_reaches_the_svg_and_the_pdf_rings() {
+    use gridcraft_chart::fixture;
+    use gridcraft_chart::parity_fixture;
+
+    fn hex(c: [u8; 4]) -> String {
+        format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2])
+    }
+
+    let prims = parity_fixture();
+    let (w, h) = (fixture::WIDTH, fixture::HEIGHT);
+
+    // SVG: a real user-space gradient with the exact stops, and the ring on all five marker hulls.
+    let svg = crate::chart_svg::prims_svg(&prims, w, h, "");
+    assert!(svg.contains(&format!("<stop offset=\"0\" stop-color=\"{}\"", hex(fixture::FROM))), "the near stop is exact, got {svg}");
+    assert!(svg.contains(&format!("<stop offset=\"1\" stop-color=\"{}\"", hex(fixture::TO))), "the far stop is exact");
+    assert!(svg.contains("gradientUnits=\"userSpaceOnUse\""), "the ramp is in user space");
+    assert_eq!(svg.matches("<polygon ").count(), 4, "one polygon per polygonal hull");
+    assert_eq!(svg.matches("<circle ").count(), 1, "one circle marker");
+    assert_eq!(svg.matches(&format!("stroke=\"{}\"", hex(fixture::RING))).count(), 5, "every marker hull keeps its ring: {svg}");
+    assert!(svg.contains(&format!("stroke-width=\"{}\"", fixture::RING_WEIGHT)), "the ring width reaches the SVG");
+
+    // PDF: native axial shading whose operands are the card-composited stops, and the ring stroke.
+    let mut doc = gridcraft_pdf::PdfDoc::new();
+    {
+        let pg = doc.add_page(w, h);
+        super::draw::draw_prims(pg, &prims, super::draw::Xf { ox: 0.0, oy: 0.0, k: 1.0 });
+    }
+    let pdf = doc.finish();
+    let bg = [fixture::CARD[0], fixture::CARD[1], fixture::CARD[2]];
+    assert!(contains(&pdf, "/ShadingType 2"), "the ramp is vector axial shading, not a bitmap");
+    assert!(contains(&pdf, &format!("/C0 [{} ", rgb_op(over(fixture::FROM, bg)))), "the near stop is exact, composited against the card");
+    assert!(contains(&pdf, &format!("/C1 [{} ", rgb_op(over(fixture::TO, bg)))), "the far stop is exact, composited against the card");
+    assert!(contains(&pdf, &rgb_op(over(fixture::RING, bg))), "the marker ring is stroked");
 }
