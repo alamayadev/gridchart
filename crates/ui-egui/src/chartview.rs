@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use egui::epaint::{PathShape, PathStroke};
 use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Stroke, StrokeKind, pos2, vec2};
-use gridcraft_chart::{HAlign, Prim, VAlign};
+use gridcraft_chart::{Fill, HAlign, Prim, VAlign};
 use gridcraft_engine::model::{Anchor, ObjKind, ObjRef, ShapeKind, Sheet, Workbook};
 
 use crate::SheetApp;
@@ -14,6 +14,66 @@ use crate::theme::{self, Tokens};
 
 fn rgba(c: [u8; 4]) -> Color32 {
     Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3])
+}
+/// Shortest ramp axis that is still a direction. The chart layer degrades a shorter one before a
+/// primitive is built; this is the local backstop, because `paint_prims` is public.
+const MIN_RAMP_SPAN: f32 = 1.0e-4;
+
+/// `[nw, ne, se, sw]` chart-space radii as egui takes them: scaled, rounded, and clamped to the
+/// range `CornerRadius` can hold, with a hostile value treated as a square corner.
+fn corner_radius(radii: [f32; 4], z: f32) -> egui::CornerRadius {
+    let px = |v: f32| {
+        let v = v * z;
+        if v.is_finite() { v.round().clamp(0.0, 255.0) as u8 } else { 0 }
+    };
+    egui::CornerRadius { nw: px(radii[0]), ne: px(radii[1]), se: px(radii[2]), sw: px(radii[3]) }
+}
+
+/// One colour of the ramp. The ends are the stop colours exactly: an interpolation that lands on
+/// `t = 1.0` need not reproduce the far stop to the last bit, so both ends return early (D-01).
+fn ramp_colour(from: Color32, to: Color32, t: f32) -> Color32 {
+    if t <= 0.0 {
+        return from;
+    }
+    if t >= 1.0 {
+        return to;
+    }
+    let (a, b) = (from.to_srgba_unmultiplied(), to.to_srgba_unmultiplied());
+    let mix = |i: usize| (f32::from(a[i]) + (f32::from(b[i]) - f32::from(a[i])) * t).round().clamp(0.0, 255.0) as u8;
+    Color32::from_rgba_unmultiplied(mix(0), mix(1), mix(2), mix(3))
+}
+
+/// A rectangle filled with a linear ramp: a strip of vertices coloured by their projection onto the
+/// axis (the same formula the rasterizer uses, so the backends agree along the ramp). epaint has no
+/// gradient fill for a rounded rectangle, so a gradient rectangle keeps square corners.
+fn ramp_mesh(r: Rect, from: Color32, to: Color32, a: Pos2, b: Pos2) -> egui::Mesh {
+    let mut mesh = egui::Mesh::default();
+    let d = b - a;
+    let len_sq = d.length_sq();
+    // Slices at most every 8 points, so Gouraud interpolation tracks the exact ramp.
+    let steps = ((d.length() / 8.0).ceil().clamp(1.0, 64.0) as usize).max(1);
+    let vertical = d.x.abs() <= d.y.abs();
+    for i in 0..=steps {
+        let s = i as f32 / steps as f32;
+        let (p0, p1, probe) = if vertical {
+            let y = r.top() + r.height() * s;
+            (pos2(r.left(), y), pos2(r.right(), y), pos2(r.center().x, y))
+        } else {
+            let x = r.left() + r.width() * s;
+            (pos2(x, r.top()), pos2(x, r.bottom()), pos2(x, r.center().y))
+        };
+        let off = probe - a;
+        let t = if len_sq > 0.0 && len_sq.is_finite() { ((off.x * d.x + off.y * d.y) / len_sq).clamp(0.0, 1.0) } else { 0.0 };
+        let col = ramp_colour(from, to, t);
+        mesh.colored_vertex(p0, col);
+        mesh.colored_vertex(p1, col);
+    }
+    for i in 0..steps as u32 {
+        let v = i * 2;
+        mesh.add_triangle(v, v + 1, v + 2);
+        mesh.add_triangle(v + 1, v + 3, v + 2);
+    }
+    mesh
 }
 
 struct EguiMeasure<'a> {
@@ -50,10 +110,22 @@ pub fn paint_prims(p: &Painter, origin: Pos2, prims: &[Prim], z: f32) {
         match prim {
             Prim::Rect { x, y, w, h, fill, stroke, radii } => {
                 let r = Rect::from_min_size(pt(*x, *y), vec2(w * z, h * z));
-                // One scalar corner radius for now; plan 02-02 turns these into per-corner shapes.
-                let radius = radii[0] * z;
-                if let Some(f) = fill {
-                    p.rect_filled(r, radius, rgba(f.start()));
+                let chart_radii = radii.map(|v| if v.is_finite() { v } else { 0.0 });
+                let radius = corner_radius(chart_radii, z);
+                match fill {
+                    Some(Fill::Solid(c)) => {
+                        p.rect_filled(r, radius, rgba(*c));
+                    }
+                    Some(f @ Fill::Linear { from, to, start, end }) => {
+                        let (a, b) = (pt(start[0], start[1]), pt(end[0], end[1]));
+                        let len_sq = (b - a).length_sq();
+                        if len_sq.is_finite() && len_sq > MIN_RAMP_SPAN {
+                            p.add(egui::Shape::mesh(ramp_mesh(r, rgba(*from), rgba(*to), a, b)));
+                        } else {
+                            p.rect_filled(r, radius, rgba(f.start()));
+                        }
+                    }
+                    None => {}
                 }
                 if let Some((c, wd)) = stroke {
                     p.rect_stroke(r, radius, Stroke::new(wd * z.max(0.5), rgba(*c)), StrokeKind::Inside);
@@ -688,5 +760,71 @@ pub(crate) mod tests {
             seen.push((rgba(style.card), rgba(bar)));
         }
         assert_ne!(seen[0], seen[1], "the dark preset paints a different surface and ramp");
+    }
+
+    /// All vertex colours of the meshes painted, in paint order.
+    fn mesh_colours(out: &egui::FullOutput) -> Vec<Color32> {
+        out.shapes
+            .iter()
+            .filter_map(|cs| match &cs.shape {
+                egui::Shape::Mesh(m) => Some(m.vertices.iter().map(|v| v.color)),
+                _ => None,
+            })
+            .flatten()
+            .collect()
+    }
+
+    fn gradient_bar(fill: Fill) -> Vec<Prim> {
+        vec![Prim::Rect { x: 0.0, y: 0.0, w: 20.0, h: 100.0, fill: Some(fill), stroke: None, radii: [0.0; 4] }]
+    }
+
+    /// D-01 (egui leg): the stop colours at both ends of the ramp are exact, not re-derived.
+    #[test]
+    fn a_gradient_bar_paints_a_mesh_with_the_exact_end_vertex_colours() {
+        let (from, to) = ([200u8, 10, 10, 255], [10u8, 10, 200, 255]);
+        let prims = gradient_bar(Fill::Linear { from, to, start: [0.0, 0.0], end: [0.0, 100.0] });
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(Default::default(), |ui| paint_prims(ui.painter(), pos2(0.0, 0.0), &prims, 1.0));
+        let colours = mesh_colours(&out);
+        out.textures_delta.clear();
+        assert!(colours.len() > 4, "the ramp is subdivided, got {} vertices", colours.len());
+        assert_eq!(colours.first(), Some(&rgba(from)), "the near stop is exact");
+        assert_eq!(colours.last(), Some(&rgba(to)), "the far stop is exact");
+        assert!(colours.iter().all(|c| *c == rgba(from) || *c == rgba(to) || (c.r() >= 10 && c.r() <= 200)), "no colour outside the ramp");
+    }
+
+    /// RTL sheets move a chart as a rigid object to a mirrored origin, so the vertex colours carry
+    /// the ramp and never depend on where the chart sits on the sheet.
+    #[test]
+    fn a_gradient_inside_an_rtl_sheet_keeps_its_vertex_colours() {
+        let (from, to) = ([200u8, 10, 10, 255], [10u8, 10, 200, 255]);
+        let prims = gradient_bar(Fill::Linear { from, to, start: [0.0, 0.0], end: [0.0, 100.0] });
+        let ctx = egui::Context::default();
+        let mut lhs = ctx.run_ui(Default::default(), |ui| paint_prims(ui.painter(), pos2(0.0, 0.0), &prims, 1.0));
+        let mut rhs = ctx.run_ui(Default::default(), |ui| paint_prims(ui.painter(), pos2(300.0, 50.0), &prims, 1.0));
+        let (a, b) = (mesh_colours(&lhs), mesh_colours(&rhs));
+        lhs.textures_delta.clear();
+        rhs.textures_delta.clear();
+        assert_eq!(a, b, "a rigid move changes no vertex colour");
+        assert!(!a.is_empty());
+    }
+
+    /// The `[nw, ne, se, sw]` radii reach egui field for field, scaled by the zoom.
+    #[test]
+    fn per_corner_radii_map_to_corner_radius_fields() {
+        let prims =
+            vec![Prim::Rect { x: 0.0, y: 0.0, w: 40.0, h: 40.0, fill: Some(Fill::solid([1, 2, 3, 255])), stroke: None, radii: [4.0, 0.0, 8.0, 2.0] }];
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(Default::default(), |ui| paint_prims(ui.painter(), pos2(0.0, 0.0), &prims, 2.0));
+        let radii: Vec<egui::CornerRadius> = out
+            .shapes
+            .iter()
+            .filter_map(|cs| match &cs.shape {
+                egui::Shape::Rect(r) => Some(r.corner_radius),
+                _ => None,
+            })
+            .collect();
+        out.textures_delta.clear();
+        assert_eq!(radii, vec![egui::CornerRadius { nw: 8, ne: 0, se: 16, sw: 4 }]);
     }
 }
