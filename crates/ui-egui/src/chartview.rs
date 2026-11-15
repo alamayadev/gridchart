@@ -647,4 +647,36 @@ pub(crate) mod tests {
         }
         assert!(checked);
     }
+
+    /// STYL-04 (egui leg): the canvas paints the primitive's own colours — the resolved card and
+    /// the preset ramp — and never re-derives them from the workbook theme.
+    #[test]
+    fn paint_prims_paints_the_resolved_card_and_ramp() {
+        fn fills(out: &egui::FullOutput) -> Vec<Color32> {
+            out.shapes
+                .iter()
+                .filter_map(|cs| match &cs.shape {
+                    egui::Shape::Rect(r) => Some(r.fill),
+                    _ => None,
+                })
+                .collect()
+        }
+        let mut seen = Vec::new();
+        for id in [0u32, 4] {
+            let style = gridcraft_chart::chart_style(id);
+            let bar = gridcraft_chart::chart_style_preset(id)[0];
+            let prims = vec![
+                Prim::Rect { x: 0.0, y: 0.0, w: 480.0, h: 288.0, fill: Some(style.card), stroke: Some((style.card_border, 1.0)), radius: 0.0 },
+                Prim::Rect { x: 40.0, y: 40.0, w: 60.0, h: 200.0, fill: Some(bar), stroke: None, radius: 0.0 },
+            ];
+            let ctx = egui::Context::default();
+            let mut out = ctx.run_ui(Default::default(), |ui| paint_prims(ui.painter(), pos2(0.0, 0.0), &prims, 1.0));
+            let painted = fills(&out);
+            out.textures_delta.clear();
+            assert!(painted.contains(&rgba(style.card)), "style {id}: the card token reaches the painter");
+            assert!(painted.contains(&rgba(bar)), "style {id}: the preset ramp reaches the painter");
+            seen.push((rgba(style.card), rgba(bar)));
+        }
+        assert_ne!(seen[0], seen[1], "the dark preset paints a different surface and ramp");
+    }
 }
