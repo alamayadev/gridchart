@@ -46,9 +46,10 @@ pub const ASYMMETRIC_RADII: [f32; 4] = [16.0, 0.0, 0.0, 0.0];
 
 /// The marker body colour every hull is filled with.
 pub const MARKER_FILL: Rgba = [16, 200, 140, 255];
-/// The marker ring: white, as production draws it (lines::MARKER_RING_WEIGHT).
+/// The marker ring: white, as the canonical default preset draws it
+/// (`ChartStyle::marker_ring == (render::WHITE, render::MARKER_RING_WEIGHT)`).
 pub const RING: Rgba = [255, 255, 255, 255];
-/// Ring width. Wider than the production MARKER_RING_WEIGHT (0.75) on purpose: a 0.75-wide band
+/// Ring width. Wider than the production ring weight (`crate::render::MARKER_RING_WEIGHT`, 0.75) on purpose: a 0.75-wide band
 /// cannot fill a 1 px raster pixel, and this fixture is also read by the pixel backend, so the ring
 /// has to be checkable there. The production weight stays covered by the marker tests in
 /// crate::render::lines.
@@ -105,3 +106,4 @@ pub fn parity_fixture() -> Vec<Prim> {
     out.extend(shapes.into_iter().zip(MARKER_CENTRES).map(|(s, x)| marker(s, x)));
     out
 }
+

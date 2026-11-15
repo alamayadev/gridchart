@@ -32,12 +32,13 @@ pub use trend::supports_trendline;
 /// Ink readable on a *series fill* (`on`), independent of the card: white on dark fills, near-black
 /// on light ones. The card's own ink lives in [`Ctx::style`].
 const DARK_TEXT: Rgba = [0x26, 0x26, 0x26, 0xFF];
-const WHITE: Rgba = [0xFF, 0xFF, 0xFF, 0xFF];
+/// White ink/separator used by fixed visual decisions (notably the default preset's ring/seam anchor).
+pub(crate) const WHITE: Rgba = [0xFF, 0xFF, 0xFF, 0xFF];
 pub(crate) const UP: Rgba = [0x3E, 0x9B, 0x5F, 0xFF];
 pub(crate) const DOWN: Rgba = [0xD6, 0x4F, 0x45, 0xFF];
-/// Ring weight on a marker. The white separator reads the same on the light and the dark preset, so
-/// it is a fixed visual decision of the style contract, not a style token: change [`WHITE`] and this
-/// constant together to reverse it.
+/// Ring weight on a marker hull. The default preset's card-coloured ring (see
+/// [`ChartStyle::marker_ring`](crate::ChartStyle::marker_ring)) anchors on this weight and on
+/// [`WHITE`]; other presets resolve their own ring and seam through the style tokens.
 pub(crate) const MARKER_RING_WEIGHT: f32 = 0.75;
 
 const TITLE_SIZE: f32 = 14.0;
@@ -243,7 +244,7 @@ pub(crate) fn sanitized(d: &ChartData) -> Cow<'_, ChartData> {
     if needs_sanitizing(d) { Cow::Owned(apply_budget(sanitize(d))) } else { Cow::Borrowed(d) }
 }
 
-/// Lays out and draws a chart into a `w`×`h` box at the origin. Empty for a degenerate box.
+/// Lays out and draws a chart into a `w`Ã—`h` box at the origin. Empty for a degenerate box.
 pub fn render(chart: &Chart, data: &ChartData, w: f32, h: f32, m: &dyn Measure) -> Vec<Prim> {
     if !(w.is_finite() && h.is_finite()) || w < 1.0 || h < 1.0 || w > 1e7 || h > 1e7 {
         return vec![];
@@ -303,7 +304,7 @@ fn draw_kind(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx) {
 
 // ---------------------------------------------------------------- final safety pass
 
-/// Drops non-finite primitives and clamps every coordinate into the `w`×`h` box, then hands every
+/// Drops non-finite primitives and clamps every coordinate into the `w`Ã—`h` box, then hands every
 /// surviving primitive to [`crate::sanitize`] for its fill, radii and stroke.
 pub(crate) fn finalize(prims: Vec<Prim>, w: f32, h: f32) -> Vec<Prim> {
     let cx = |v: f32| v.clamp(0.0, w);
@@ -371,3 +372,4 @@ pub(crate) fn finalize(prims: Vec<Prim>, w: f32, h: f32) -> Vec<Prim> {
         })
         .collect()
 }
+

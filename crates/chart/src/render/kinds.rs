@@ -1,4 +1,4 @@
-use super::frame::{Bx, CatAxis, ValAxis, frame, on, value_range};
+﻿use super::frame::{Bx, CatAxis, ValAxis, frame, on, value_range};
 use super::legend::{cat_label, point_color};
 use super::{
     Chart, ChartData, Ctx, DOWN, Fmt, HAlign, LABEL_SIZE, MAX_CATS, MAX_LABELS, MAX_MARKERS, MAX_SERIES, MAX_WEDGES, Prim, QuartileMethod, Rgba,
@@ -263,7 +263,7 @@ pub(super) fn pie(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx, inne
 }
 
 /// Excel's doughnut: every series is one concentric ring, the first series innermost (measured in
-/// Excel: ring outer radii ≈0.83, 0.92 and 1.0 of the plot radius for series 1, 2 and 3). The hole
+/// Excel: ring outer radii â‰ˆ0.83, 0.92 and 1.0 of the plot radius for series 1, 2 and 3). The hole
 /// size and first slice angle come from the chart; each ring is scaled to its own total.
 pub(super) fn doughnut(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx) {
     let nser = data.series.len().min(MAX_SERIES);
@@ -286,7 +286,7 @@ pub(super) fn doughnut(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx)
     let start = (chart.first_slice_angle % 360) as f32 * TAU / 360.0;
     // Only rings with a pixel of band are drawn, and the wedge budget is shared across them in
     // drawing order: the innermost ring (the first series) gets its slices first, and the outer
-    // rings are capped instead of the series × category product growing without bound.
+    // rings are capped instead of the series Ã— category product growing without bound.
     let rings: Vec<(&SeriesData, f32, f32)> = data
         .series
         .iter()
@@ -464,7 +464,7 @@ pub(super) fn radar(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx) {
             } else if let Some(p) = ring.first().copied() {
                 ring.push(p);
             }
-            ctx.line(ring, ctx.style.grid, 0.75);
+            ctx.line(ring, ctx.style.grid.0, ctx.style.grid.1);
         }
         if ti % every == 0 {
             ctx.text(cx - 3.0, cy - rr, &f.format(t, Some(sc.step)), LABEL_SIZE * 0.9, ctx.style.text, (HAlign::Right, VAlign::Middle));
@@ -473,7 +473,7 @@ pub(super) fn radar(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx) {
     let step = ncat.div_ceil(72).max(1);
     for j in (0..ncat).step_by(step) {
         let a = ang(j);
-        ctx.line(vec![[cx, cy], pt(a, r)], ctx.style.grid, 0.75);
+        ctx.line(vec![[cx, cy], pt(a, r)], ctx.style.grid.0, ctx.style.grid.1);
         let p = pt(a, r + 6.0);
         let (sa, ca) = (a.sin(), a.cos());
         let align = if sa > 0.1 {
@@ -646,3 +646,4 @@ mod quartile_tests {
         }
     }
 }
+

@@ -1,4 +1,4 @@
-//! GridCraft charts (layer L3, toolkit-free).
+﻿//! GridCraft charts (layer L3, toolkit-free).
 //!
 //! - [`resolve`] pulls series names, categories and values out of a workbook,
 //! - [`render`] lays a chart out into a list of drawing primitives ([`Prim`]) that any UI
@@ -33,7 +33,7 @@ pub use resolve::palette::{
     PALETTE_DARK, PALETTE_DEFAULT, PALETTE_DEFAULT_TABLE, PALETTE_MINIMAL, PALETTE_PASTEL, PALETTE_TINTED, PALETTE_VIBRANT, Preset,
     chart_style_family, chart_style_preset, chart_style_total,
 };
-pub use resolve::style::{ChartStyle, chart_style};
+pub use resolve::style::{ChartStyle, TypeScale, chart_style};
 pub use resolve::{default_palette, has_volatile_series, resolve, series_color, series_plot_kind};
 pub use sparkline::render_sparkline;
 
@@ -145,7 +145,7 @@ pub trait Measure {
     fn text_width(&self, text: &str, size: f32, bold: bool) -> f32;
 }
 
-/// Fixed-width approximation: `0.55 × size` per character (bold 10% wider).
+/// Fixed-width approximation: `0.55 Ã— size` per character (bold 10% wider).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ApproxMeasure;
 
@@ -215,3 +215,4 @@ impl Default for SeriesData {
         }
     }
 }
+

@@ -1,4 +1,4 @@
-use super::{AXIS_TITLE_SIZE, Chart, ChartData, Ctx, DARK_TEXT, Fmt, HAlign, LABEL_SIZE, PI, Prim, Rgba, Scale, VAlign, WHITE};
+﻿use super::{Chart, ChartData, Ctx, DARK_TEXT, Fmt, HAlign, PI, Prim, Rgba, Scale, VAlign, WHITE};
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Bx {
@@ -41,20 +41,27 @@ pub(super) fn chart_title(chart: &Chart, data: &ChartData) -> Option<String> {
 }
 
 pub(super) fn axis_titles(ctx: &mut Ctx, chart: &Chart, mut area: Bx) -> Bx {
-    let lh = AXIS_TITLE_SIZE * 1.4 + 2.0;
+    let lh = ctx.style.type_scale.axis_title * 1.4 + 2.0;
     if let Some(t) = chart.x_title.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
-        let t = ctx.fit(t, AXIS_TITLE_SIZE, area.w);
-        ctx.text(area.cx(), area.bottom(), &t, AXIS_TITLE_SIZE, ctx.style.text, (HAlign::Center, VAlign::Bottom));
+        let t = ctx.fit(t, ctx.style.type_scale.axis_title, area.w);
+        ctx.text(
+            area.cx(),
+            area.bottom(),
+            &t,
+            ctx.style.type_scale.axis_title,
+            ctx.style.text,
+            (HAlign::Center, VAlign::Bottom),
+        );
         area.h -= lh;
     }
     if let Some(t) = chart.y_title.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
-        let t = ctx.fit(t, AXIS_TITLE_SIZE, area.h);
+        let t = ctx.fit(t, ctx.style.type_scale.axis_title, area.h);
         if !t.is_empty() {
             ctx.out.push(Prim::Text {
                 x: area.x,
                 y: area.cy(),
                 text: t,
-                size: AXIS_TITLE_SIZE,
+                size: ctx.style.type_scale.axis_title,
                 color: ctx.style.text,
                 bold: false,
                 align: HAlign::Center,
@@ -100,7 +107,7 @@ impl ValAxis<'_> {
 
 /// Draws gridlines, axis labels and the category axis line; returns the plot rectangle.
 pub(super) fn frame(ctx: &mut Ctx, area: Bx, cat: CatAxis, y: &ValAxis, y2: Option<&ValAxis>, horizontal: bool, grid: bool) -> Bx {
-    let ls = LABEL_SIZE;
+    let ls = ctx.style.type_scale.tick;
     let lh = ls * 1.4;
     let ylabels = y.labels();
     let stub = match &cat {
@@ -127,7 +134,7 @@ pub(super) fn frame(ctx: &mut Ctx, area: Bx, cat: CatAxis, y: &ValAxis, y2: Opti
         for (v, t) in &ylabels {
             let yy = plot.bottom() - y.scale.frac(*v) * plot.h;
             if grid {
-                ctx.hline(plot.x, plot.right(), yy, ctx.style.grid, 0.75);
+                ctx.hline(plot.x, plot.right(), yy, ctx.style.grid.0, ctx.style.grid.1);
             }
             ctx.text(plot.x - 4.0, yy, t, ls, ctx.style.text, (HAlign::Right, VAlign::Middle));
         }
@@ -208,7 +215,7 @@ pub(super) fn frame(ctx: &mut Ctx, area: Bx, cat: CatAxis, y: &ValAxis, y2: Opti
         for (i, (v, t)) in ylabels.iter().enumerate() {
             let xx = plot.x + y.scale.frac(*v) * plot.w;
             if grid {
-                ctx.vline(xx, plot.y, plot.bottom(), ctx.style.grid, 0.75);
+                ctx.vline(xx, plot.y, plot.bottom(), ctx.style.grid.0, ctx.style.grid.1);
             }
             if i % k == 0 {
                 ctx.text(xx, plot.bottom() + 3.0, t, ls, ctx.style.text, (HAlign::Center, VAlign::Top));
@@ -252,3 +259,4 @@ pub(super) fn value_range(it: impl Iterator<Item = f64>) -> Option<(f64, f64)> {
         Some((a, b)) => Some((a.min(v), b.max(v))),
     })
 }
+
