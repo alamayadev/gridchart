@@ -988,6 +988,30 @@ fn chart_budget_counts_path_points_and_drops_charts_that_do_not_fit() {
     let mut pics = PicCache { chart_prims: MAX_CHART_PRIMS - 10, ..Default::default() };
     assert!(pics.chart((0, 1), || vec![line(1000)]).is_none());
     assert!(pics.charts.is_empty() && pics.rejected_charts.contains(&(0, 1)));
+
+    // D-04: the new payload is inline and fixed-size, so a two-stop ramp costs one unit and a ringed
+    // hull costs its outline points plus one - nothing per stop, nothing per ring. Every ceiling
+    // stays where it was: MAX_CHART_PRIMS here, MAX_BYTES and MAX_ENTRIES in chartcache,
+    // MAX_SCAN_WORK and MAX_PIXELS in the rasterizer, MAX_PAGE_SVG_BYTES in the SVG emitter.
+    let ramp = Prim::Rect {
+        x: 0.0,
+        y: 0.0,
+        w: 10.0,
+        h: 10.0,
+        fill: Some(gridcraft_chart::Fill::Linear { from: [1, 2, 3, 255], to: [4, 5, 6, 255], start: [0.0, 0.0], end: [0.0, 10.0] }),
+        stroke: None,
+        radii: [0.0; 4],
+    };
+    let hull =
+        Prim::Polygon { pts: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]], fill: [1, 2, 3, 255], stroke: Some(([255, 255, 255, 255], 2.0)) };
+    assert_eq!(chart_cost(&[ramp, hull]), 1 + 5, "a ramp is one unit; a four-point hull is its points plus one");
+    // The shared fixture costs exactly what its geometry says, and a budget of exactly that much
+    // admits it: the ring and the ramp have no budget of their own.
+    let fixture = gridcraft_chart::parity_fixture();
+    let cost = chart_cost(&fixture);
+    assert_eq!(cost, 3 + 1 + 5 + 5 + 4 + 4, "three rects, one circle and four triangular/square hulls");
+    let mut pics = PicCache { chart_prims: MAX_CHART_PRIMS - cost, ..Default::default() };
+    assert!(pics.chart((0, 2), || fixture.clone()).is_some(), "the fixture fits the budget its own accounted cost leaves");
 }
 
 /// STYL-04: one resolved scene carries the preset's tokens all the way out — into the built-in
