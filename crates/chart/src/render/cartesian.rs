@@ -132,20 +132,30 @@ fn bar_radii_at(rounds: bool, bw: f32, len: f32, horizontal: bool, tip: bool, me
     if rounds { bar_radii(bw, len, horizontal, tip, merged) } else { [0.0; 4] }
 }
 
-/// For each category, the index of the series at the far end of its stack (`None` when the
-/// category has no stacked column, where every bar carries its own tip): only that segment rounds,
-/// or a stack bulges mid-air.
-fn stack_terminals(spans: &[Vec<Option<(f64, f64)>>], fams: &[Fam], ncat: usize) -> Vec<Option<usize>> {
-    let mut terminals = vec![None; ncat];
+/// For each category, the series indices at the far ends of its positive and negative stacks
+/// (`None` when the category has no stacked column on that side, where every bar carries its own
+/// tip): only the outward terminal segment of each sign rounds, so a mixed-sign stack keeps its
+/// internal joins square.
+fn stack_terminals(
+    spans: &[Vec<Option<(f64, f64)>>],
+    fams: &[Fam],
+    ncat: usize,
+) -> Vec<(Option<usize>, Option<usize>)> {
+    let mut terminals = vec![(None, None); ncat];
     for (i, row) in spans.iter().enumerate() {
         if !fams.get(i).is_some_and(|f| matches!(f, Fam::ColStack | Fam::Col100)) {
             continue;
         }
         for (j, sp) in row.iter().enumerate().take(ncat) {
-            if sp.is_some()
-                && let Some(t) = terminals.get_mut(j)
-            {
-                *t = Some(i);
+            let Some((b, t)) = *sp else { continue };
+            let Some(slot) = terminals.get_mut(j) else { continue };
+            let hi = b.max(t);
+            let lo = b.min(t);
+            if hi > 0.0 {
+                slot.0 = Some(i);
+            }
+            if lo < 0.0 {
+                slot.1 = Some(i);
             }
         }
     }
@@ -462,10 +472,17 @@ pub(super) fn cartesian(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx
                         // The ramp runs along the value axis, from the baseline to the value end;
                         // the tip is the far end when the value grows away from the baseline.
                         let mid = sink.pos(c) + bw / 2.0;
-                        // Only the far end of a stack rounds; every other segment stays square, and
-                        // an unstacked bar is always its own far end.
-                        let end = terminals.get(j).copied().flatten();
-                        let rounds = end.is_none() || end == Some(i);
+                        // Only the outward terminal of a stack rounds (positive and negative stacks are
+                        // independent in a mixed-sign column); every other segment stays square, and an
+                        // unstacked bar is always its own terminal.
+                        let lo_v = (*b).min(*t);
+                        let hi_v = (*b).max(*t);
+                        let positive = hi_v > 0.0 && lo_v >= -1e-9;
+                        let end = terminals.get(j).copied().unwrap_or((None, None));
+                        let rounds = match (end.0, end.1) {
+                            (None, None) => true,
+                            (pos, neg) => (positive && pos == Some(i)) || (!positive && neg == Some(i)),
+                        };
                         let radii = bar_radii_at(rounds, bw, len, horizontal, bar_tip(horizontal, pb, pt), cull);
                         sink.bar(ctx, cull, c, Bar { lo, len, radii, fill: bar_fill(ctx, s.color, horizontal, mid, pb, pt) });
                         if labels_on && let Some(v) = s.values.get(j).copied().flatten() {

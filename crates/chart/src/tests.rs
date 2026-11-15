@@ -2096,6 +2096,241 @@ fn hairline_bars_stay_square() {
     assert!(radii.iter().all(|r| *r == [0.0; 4]), "a merged hairline run has no roundable tip");
 }
 
+/// Criterion 1 proof (03-01-07): only the outward terminal of every bar rounds. The producer
+/// implements this via `bar_radii`/`bar_radii_at` in `crates/chart/src/render/cartesian.rs`;
+/// Phase 4's waterfall, funnel and treemap bars must reuse those helpers.
+#[test]
+fn criterion_one_rounds_only_the_outward_terminal_of_every_bar() {
+    // 1. Clustered columns: positive rounds the top two corners, negative rounds the bottom two.
+    let mut col = chart(ChartKind::ColumnClustered);
+    col.data_labels = false;
+    let prims = render(
+        &col,
+        &solo(&[3.0, -3.0], ChartKind::ColumnClustered),
+        640.0,
+        400.0,
+        &ApproxMeasure,
+    );
+    let radii = rect_radii(&prims);
+    let up = radii
+        .iter()
+        .copied()
+        .find(|r| r[0] > 0.0 || r[1] > 0.0)
+        .expect("positive column: a rounded rect exists");
+    assert!(
+        up[0] == up[1] && up[0] > 0.0 && up[2] == 0.0 && up[3] == 0.0,
+        "positive column: only top corners round, got {up:?}"
+    );
+    let down = radii
+        .iter()
+        .copied()
+        .find(|r| r[2] > 0.0 || r[3] > 0.0)
+        .expect("negative column: a rounded rect exists");
+    assert!(
+        down[2] == down[3] && down[2] > 0.0 && down[0] == 0.0 && down[1] == 0.0,
+        "negative column: only bottom corners round, got {down:?}"
+    );
+
+    // 2. Clustered bars: positive rounds the right two corners, negative rounds the left two.
+    let mut bar = chart(ChartKind::BarClustered);
+    bar.data_labels = false;
+    let prims = render(
+        &bar,
+        &solo(&[3.0, -3.0], ChartKind::BarClustered),
+        640.0,
+        400.0,
+        &ApproxMeasure,
+    );
+    let radii = rect_radii(&prims);
+    let pos = radii
+        .iter()
+        .copied()
+        .find(|r| r[1] > 0.0 || r[2] > 0.0)
+        .expect("positive bar: a rounded rect exists");
+    assert!(
+        pos[1] == pos[2] && pos[1] > 0.0 && pos[0] == 0.0 && pos[3] == 0.0,
+        "positive bar: only right corners round, got {pos:?}"
+    );
+    let neg = radii
+        .iter()
+        .copied()
+        .find(|r| r[0] > 0.0 || r[3] > 0.0)
+        .expect("negative bar: a rounded rect exists");
+    assert!(
+        neg[0] == neg[3] && neg[0] > 0.0 && neg[1] == 0.0 && neg[2] == 0.0,
+        "negative bar: only left corners round, got {neg:?}"
+    );
+
+    // 3. Mixed-sign stacked columns: each category has one positive terminal on top, one negative
+    // terminal on the bottom, and every internal join square.
+    let mut stacked = chart(ChartKind::ColumnStacked);
+    stacked.data_labels = false;
+    let d = ChartData {
+        category_levels: vec![],
+        palette: vec![],
+        categories: vec!["C0".into(), "C1".into()],
+        series: vec![
+            series("A", &[10.0, 10.0], [200, 80, 40, 255], ChartKind::ColumnStacked),
+            series("B", &[20.0, 20.0], [20, 96, 130, 255], ChartKind::ColumnStacked),
+            series("C", &[-15.0, -15.0], [25, 107, 36, 255], ChartKind::ColumnStacked),
+        ],
+    };
+    let prims = render(&stacked, &d, 640.0, 400.0, &ApproxMeasure);
+    let mut rects: Vec<(f32, f32, f32, f32, [f32; 4])> = prims
+        .iter()
+        .filter_map(|p| match p {
+            Prim::Rect {
+                x,
+                y,
+                w,
+                h,
+                radii,
+                fill: Some(_),
+                ..
+            } if *h > 0.5 && *w > 5.0 => Some((*x, *y, *w, *h, *radii)),
+            _ => None,
+        })
+        .collect();
+    rects.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    let mut groups: Vec<Vec<(f32, f32, f32, f32, [f32; 4])>> = Vec::new();
+    for r in rects {
+        let tol = (r.2 * 0.6).max(4.0);
+        if let Some(g) = groups.iter_mut().find(|g| (g[0].0 - r.0).abs() <= tol) {
+            g.push(r);
+        } else {
+            groups.push(vec![r]);
+        }
+    }
+    let mut bar_groups: Vec<Vec<(f32, f32, f32, f32, [f32; 4])>> =
+        groups.into_iter().filter(|g| g.len() == 3).collect();
+    bar_groups.sort_by(|a, b| a[0].0.total_cmp(&b[0].0));
+    assert_eq!(
+        bar_groups.len(),
+        2,
+        "mixed stacked: expected two category columns with 3 segments, got {bar_groups:?}"
+    );
+    for col_rects in &mut bar_groups {
+        col_rects.sort_by(|a, b| a.1.total_cmp(&b.1));
+        let top = col_rects.first().copied().expect("top segment");
+        let bottom = col_rects.last().copied().expect("bottom segment");
+        assert!(
+            top.4[0] == top.4[1] && top.4[0] > 0.0 && top.4[2] == 0.0 && top.4[3] == 0.0,
+            "mixed stacked column: positive top terminal rounds outward, got {:?}",
+            top.4
+        );
+        assert!(
+            bottom.4[2] == bottom.4[3] && bottom.4[2] > 0.0 && bottom.4[0] == 0.0 && bottom.4[1] == 0.0,
+            "mixed stacked column: negative bottom terminal rounds outward, got {:?}",
+            bottom.4
+        );
+        for mid in col_rects.iter().skip(1).take(col_rects.len().saturating_sub(2)) {
+            assert_eq!(
+                mid.4,
+                [0.0; 4],
+                "mixed stacked column: interior segment stays square, got {:?}",
+                mid.4
+            );
+        }
+        assert_eq!(
+            col_rects.iter().filter(|r| r.4 == [0.0; 4]).count(),
+            col_rects.len().saturating_sub(2),
+            "mixed stacked column: only the two terminals round"
+        );
+    }
+
+    // 4. Merged hairline clustered bars stay square (60x60 chart with 12 categories).
+    let mut thin = chart(ChartKind::ColumnClustered);
+    thin.data_labels = false;
+    thin.legend = LegendPos::None;
+    let values: Vec<f64> = (0..12).map(|i| (i % 7) as f64 + 1.0).collect();
+    let d = ChartData {
+        category_levels: vec![],
+        palette: vec![],
+        categories: (0..values.len()).map(|i| format!("C{i}")).collect(),
+        series: vec![series(
+            "S",
+            &values,
+            [200, 80, 40, 255],
+            ChartKind::ColumnClustered,
+        )],
+    };
+    let prims = render(&thin, &d, 60.0, 60.0, &ApproxMeasure);
+    let radii = rect_radii(&prims);
+    assert!(!radii.is_empty(), "hairline case: chart still draws bars");
+    assert!(
+        radii.iter().all(|r| *r == [0.0; 4]),
+        "hairline case: merged hairline bars stay square, got {radii:?}"
+    );
+
+    // 5. 100% stacked columns share the same two-terminal invariant.
+    let mut stacked100 = chart(ChartKind::ColumnStacked100);
+    stacked100.data_labels = false;
+    let d = ChartData {
+        category_levels: vec![],
+        palette: vec![],
+        categories: vec!["C0".into(), "C1".into()],
+        series: vec![
+            series("A", &[10.0, 10.0], [200, 80, 40, 255], ChartKind::ColumnStacked100),
+            series("B", &[20.0, 20.0], [20, 96, 130, 255], ChartKind::ColumnStacked100),
+            series("C", &[-15.0, -15.0], [25, 107, 36, 255], ChartKind::ColumnStacked100),
+        ],
+    };
+    let prims = render(&stacked100, &d, 640.0, 400.0, &ApproxMeasure);
+    let mut rects: Vec<(f32, f32, f32, f32, [f32; 4])> = prims
+        .iter()
+        .filter_map(|p| match p {
+            Prim::Rect {
+                x,
+                y,
+                w,
+                h,
+                radii,
+                fill: Some(_),
+                ..
+            } if *h > 0.5 && *w > 5.0 => Some((*x, *y, *w, *h, *radii)),
+            _ => None,
+        })
+        .collect();
+    rects.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    let mut groups: Vec<Vec<(f32, f32, f32, f32, [f32; 4])>> = Vec::new();
+    for r in rects {
+        let tol = (r.2 * 0.6).max(4.0);
+        if let Some(g) = groups.iter_mut().find(|g| (g[0].0 - r.0).abs() <= tol) {
+            g.push(r);
+        } else {
+            groups.push(vec![r]);
+        }
+    }
+    let mut bar_groups: Vec<Vec<(f32, f32, f32, f32, [f32; 4])>> =
+        groups.into_iter().filter(|g| g.len() == 3).collect();
+    bar_groups.sort_by(|a, b| a[0].0.total_cmp(&b[0].0));
+    assert_eq!(
+        bar_groups.len(),
+        2,
+        "stacked100: expected two category columns with 3 segments, got {bar_groups:?}"
+    );
+    for col_rects in &mut bar_groups {
+        col_rects.sort_by(|a, b| a.1.total_cmp(&b.1));
+        let top = col_rects.first().copied().expect("stacked100 top segment");
+        let bottom = col_rects.last().copied().expect("stacked100 bottom segment");
+        assert!(
+            top.4[0] == top.4[1] && top.4[0] > 0.0 && top.4[2] == 0.0 && top.4[3] == 0.0,
+            "stacked100 column: top terminal rounds outward, got {:?}",
+            top.4
+        );
+        assert!(
+            bottom.4[2] == bottom.4[3] && bottom.4[2] > 0.0 && bottom.4[0] == 0.0 && bottom.4[1] == 0.0,
+            "stacked100 column: bottom terminal rounds outward, got {:?}",
+            bottom.4
+        );
+        assert_eq!(
+            col_rects.iter().filter(|r| r.4 == [0.0; 4]).count(),
+            col_rects.len().saturating_sub(2),
+            "stacked100 column: only the two terminals round"
+        );
+    }
+}
+
 #[test]
 fn a_bar_ramp_runs_along_the_value_axis() {
     let mut c = chart(ChartKind::ColumnClustered);
