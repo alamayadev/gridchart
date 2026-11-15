@@ -1,6 +1,6 @@
 use super::frame::Bx;
 use super::shape::{self, MarkerGeometry, MarkerShape};
-use super::{Ctx, MARKER_RING_WEIGHT, MAX_LINE_PTS, MAX_MARKERS, Prim, Rgba, WHITE};
+use super::{Ctx, MAX_LINE_PTS, MAX_MARKERS, Prim, Rgba};
 use std::collections::HashSet;
 
 // ---------------------------------------------------------------- helpers
@@ -212,7 +212,7 @@ fn catmull(p0: [f32; 2], p1: [f32; 2], p2: [f32; 2], p3: [f32; 2], t: f32) -> [f
 
 pub(super) fn draw_markers(ctx: &mut Ctx, pts: impl Iterator<Item = [f32; 2]>, r: f32, color: Rgba, shape: MarkerShape) {
     let mut seen = HashSet::new();
-    let ring = Some((WHITE, MARKER_RING_WEIGHT));
+    let ring = Some(ctx.style.marker_ring);
     for p in pts {
         if seen.len() >= MAX_MARKERS {
             break;
@@ -242,6 +242,7 @@ mod marker_tests {
 
     #[test]
     fn every_shape_costs_one_ringed_primitive_per_point() {
+        let ring = crate::resolve::style::chart_style(0).marker_ring;
         for shape in shape::all_shapes() {
             let out = prims_for(shape, &[[10.0, 20.0], [40.0, 50.0]]);
             assert_eq!(out.len(), 2, "one primitive per point for {shape:?}");
@@ -250,7 +251,7 @@ mod marker_tests {
                     Prim::Circle { stroke, .. } | Prim::Polygon { stroke, .. } => *stroke,
                     other => panic!("{shape:?} drew {other:?}"),
                 };
-                assert_eq!(stroke, Some((WHITE, MARKER_RING_WEIGHT)), "{shape:?} keeps the white ring");
+                assert_eq!(stroke, Some(ring), "{shape:?} keeps the card ring");
             }
         }
     }
@@ -259,6 +260,7 @@ mod marker_tests {
 #[cfg(test)]
 mod smooth_tests {
     use super::*;
+    use crate::render::WHITE;
 
     #[test]
     fn long_runs_are_smoothed_uniformly_within_the_cap() {

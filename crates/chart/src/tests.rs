@@ -2354,21 +2354,92 @@ fn a_bar_ramp_runs_along_the_value_axis() {
 }
 
 #[test]
-fn markers_keep_the_white_ring_at_the_lock_weight() {
-    let white = [255, 255, 255, 255];
-    for style in [0, 4] {
-        let mut c = chart(ChartKind::LineMarkers);
-        c.style = style;
-        let prims = render(&c, &sample(ChartKind::LineMarkers), 640.0, 400.0, &ApproxMeasure);
-        let rings: Vec<(Rgba, f32)> = prims
-            .iter()
-            .filter_map(|p| match p {
-                Prim::Circle { stroke: Some(s), .. } | Prim::Polygon { stroke: Some(s), .. } => Some(*s),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(rings.len(), 18, "one ringed marker per point on style {style}");
-        assert!(rings.iter().all(|s| *s == (white, 0.75)), "the ring is white at the lock weight on style {style}");
+fn markers_cycle_the_four_hulls_by_series_index() {
+    use crate::render::shape::{MarkerGeometry, marker_shape, geometry};
+    let c = chart(ChartKind::LineMarkers);
+    let prims = render(&c, &sample(ChartKind::LineMarkers), 640.0, 400.0, &ApproxMeasure);
+    let markers: Vec<&Prim> = prims
+        .iter()
+        .filter(|p| matches!(p, Prim::Circle { stroke: Some(_), .. } | Prim::Polygon { stroke: Some(_), .. }))
+        .collect();
+    assert_eq!(markers.len(), 18, "one ringed marker per point across three series");
+    let hull_of = |p: &Prim| -> (Vec<[f32; 2]>, f32) {
+        match p {
+            Prim::Circle { cx, cy, r, .. } => (vec![[*cx, *cy]], *r),
+            Prim::Polygon { pts, .. } => {
+                let cx = pts.iter().map(|q| q[0]).fold(f32::MIN, f32::max) / 2.0 + pts.iter().map(|q| q[0]).fold(f32::MAX, f32::min) / 2.0;
+                let cy = pts.iter().map(|q| q[1]).fold(f32::MIN, f32::max) / 2.0 + pts.iter().map(|q| q[1]).fold(f32::MAX, f32::min) / 2.0;
+                let r = pts.iter().map(|q| ((q[0] - cx).powi(2) + (q[1] - cy).powi(2)).sqrt()).fold(0.0f32, f32::max);
+                (pts.clone(), r)
+            }
+            _ => (vec![], 0.0),
+        }
+    };
+    let close = |a: &[f32; 2], b: &[f32; 2]| (a[0] - b[0]).abs() < 1e-3 && (a[1] - b[1]).abs() < 1e-3;
+    for (i, p) in markers.iter().enumerate() {
+        let series = i / 6;
+        match geometry(marker_shape(series), 0.0, 0.0, 3.5) {
+            MarkerGeometry::Circle { .. } => {
+                let (centers, r) = hull_of(p);
+                assert!(matches!(p, Prim::Circle { .. }), "series {series} draws circles, got {p:?}");
+                assert!((r - 3.5).abs() < 1e-3, "series {series} circle radius 3.5, got {r}");
+                assert_eq!(centers.len(), 1);
+            }
+            MarkerGeometry::Polygon(want) => {
+                let (got, r) = hull_of(p);
+                assert_eq!(got.len(), want.len(), "series {series} hull has {} points", want.len());
+                assert!((r - 3.5).abs() < 1e-3, "series {series} hull circumradius 3.5, got {r}");
+                let cx = got.iter().map(|q| q[0]).fold(f32::MIN, f32::max) / 2.0 + got.iter().map(|q| q[0]).fold(f32::MAX, f32::min) / 2.0;
+                let cy = got.iter().map(|q| q[1]).fold(f32::MIN, f32::max) / 2.0 + got.iter().map(|q| q[1]).fold(f32::MAX, f32::min) / 2.0;
+                let expect: Vec<[f32; 2]> = want.iter().map(|q| [q[0] + cx, q[1] + cy]).collect();
+                assert!(got.iter().zip(&expect).all(|(a, b)| close(a, b)), "series {series} hull {got:?} vs {expect:?}");
+            }
+        }
+    }
+    // A fourth series draws the triangle hull, a fifth cycles back to the circle.
+    let mut five = sample(ChartKind::LineMarkers);
+    five.series.push(series("West", &[5000.0, 6000.0, 7000.0, 8000.0, 9000.0, 10000.0], [90, 40, 120, 255], ChartKind::LineMarkers));
+    five.series.push(series("North2", &[11000.0, 12000.0, 13000.0, 14000.0, 15000.0, 16000.0], [40, 120, 90, 255], ChartKind::LineMarkers));
+    let prims = render(&c, &five, 640.0, 400.0, &ApproxMeasure);
+    let markers: Vec<&Prim> = prims
+        .iter()
+        .filter(|p| matches!(p, Prim::Circle { stroke: Some(_), .. } | Prim::Polygon { stroke: Some(_), .. }))
+        .collect();
+    assert_eq!(markers.len(), 30, "five series of six points");
+    assert!(matches!(markers[18 + 5], Prim::Polygon { pts, .. } if pts.len() == 3), "series 3 draws the three-point triangle");
+    assert!(matches!(markers[24 + 5], Prim::Circle { .. }), "series 4 cycles back to the circle");
+}
+
+#[test]
+fn markers_ring_with_the_card_at_the_preset_weight() {
+    let style_of = crate::resolve::style::chart_style;
+    for style in [0u32, 4] {
+        let ring = style_of(style).marker_ring;
+        assert_eq!(ring.0, style_of(style).card, "the ring is the card colour on style {style}");
+        assert!((0.5..=2.5).contains(&ring.1), "the ring weight stays hairline-thin on style {style}");
+        for kind in [ChartKind::LineMarkers, ChartKind::Scatter, ChartKind::Bubble] {
+            let mut c = chart(kind);
+            c.style = style;
+            let prims = render(&c, &sample(kind), 640.0, 400.0, &ApproxMeasure);
+            let ringed: Vec<&Prim> = prims
+                .iter()
+                .filter(|p| matches!(p, Prim::Circle { stroke: Some(_), .. } | Prim::Polygon { stroke: Some(_), .. }))
+                .collect();
+            assert!(!ringed.is_empty(), "{kind:?} on style {style} draws ringed markers");
+            for p in ringed {
+                let stroke = match p {
+                    Prim::Circle { stroke, .. } | Prim::Polygon { stroke, .. } => *stroke,
+                    _ => None,
+                };
+                assert_eq!(stroke, Some(ring), "{kind:?} on style {style} rings with the card token");
+                if kind == ChartKind::Bubble
+                    && let Prim::Circle { r, fill, .. } = p
+                {
+                    assert!(*r > 3.5, "a bubble keeps its value-sized radius, got {r}");
+                    assert_eq!(fill.map(|f| f[3]), Some(0xC0), "a bubble keeps its translucent fill");
+                }
+            }
+        }
     }
 }
 
