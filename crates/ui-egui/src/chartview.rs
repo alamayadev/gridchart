@@ -43,35 +43,59 @@ fn ramp_colour(from: Color32, to: Color32, t: f32) -> Color32 {
     Color32::from_rgba_unmultiplied(mix(0), mix(1), mix(2), mix(3))
 }
 
-/// A rectangle filled with a linear ramp: a strip of vertices coloured by their projection onto the
-/// axis (the same formula the rasterizer uses, so the backends agree along the ramp). epaint has no
-/// gradient fill for a rounded rectangle, so a gradient rectangle keeps square corners.
-fn ramp_mesh(r: Rect, from: Color32, to: Color32, a: Pos2, b: Pos2) -> egui::Mesh {
+/// The outline of a rounded rectangle, clockwise from the top-left corner: a corner whose radius
+/// cannot fill a pixel stays a single point, the others become an arc of 4 to 8 segments. Each
+/// radius is honoured on its own (02-02-04).
+fn rounded_outline(r: Rect, radius: egui::CornerRadius) -> Vec<Pos2> {
+    use std::f32::consts::{FRAC_PI_2, PI};
+
+    let limit = if r.width().is_finite() && r.height().is_finite() { (r.width().min(r.height()) * 0.5).max(0.0) } else { 0.0 };
+    let rad = |v: u8| f32::from(v).clamp(0.0, limit);
+    let (nw, ne, se, sw) = (rad(radius.nw), rad(radius.ne), rad(radius.se), rad(radius.sw));
+    let mut out = Vec::with_capacity(4 * 9);
+    // Twelve o clock to three for a top-right corner, and so on: the direction the chart rasterizer
+    // and the PDF page trace the same corner.
+    corner_outline(&mut out, r.left() + nw, r.top() + nw, nw, 3.0 * FRAC_PI_2);
+    corner_outline(&mut out, r.right() - ne, r.top() + ne, ne, 0.0);
+    corner_outline(&mut out, r.right() - se, r.bottom() - se, se, FRAC_PI_2);
+    corner_outline(&mut out, r.left() + sw, r.bottom() - sw, sw, PI);
+    out
+}
+
+/// Pushes one corner: its single point under half a pixel, otherwise a quarter turn clockwise in
+/// screen coordinates starting at `a0`.
+fn corner_outline(out: &mut Vec<Pos2>, cx: f32, cy: f32, rad: f32, a0: f32) {
+    if rad < 0.5 {
+        out.push(pos2(cx, cy));
+        return;
+    }
+    let segments = ((rad * 0.5).ceil() as usize).clamp(4, 8);
+    for i in 0..=segments {
+        let a = a0 + std::f32::consts::FRAC_PI_2 * (i as f32 / segments as f32);
+        out.push(pos2(cx + rad * a.sin(), cy - rad * a.cos()));
+    }
+}
+
+/// A rectangle filled with a linear ramp: a fan of triangles over its rounded outline, each vertex
+/// coloured by its own projection onto the axis (the same formula the rasterizer uses, so all four
+/// backends agree along the ramp). The hub is the rect centre, so a rounded tip keeps its arc.
+fn ramp_mesh(r: Rect, radius: egui::CornerRadius, from: Color32, to: Color32, a: Pos2, b: Pos2) -> egui::Mesh {
     let mut mesh = egui::Mesh::default();
     let d = b - a;
     let len_sq = d.length_sq();
-    // Slices at most every 8 points, so Gouraud interpolation tracks the exact ramp.
-    let steps = ((d.length() / 8.0).ceil().clamp(1.0, 64.0) as usize).max(1);
-    let vertical = d.x.abs() <= d.y.abs();
-    for i in 0..=steps {
-        let s = i as f32 / steps as f32;
-        let (p0, p1, probe) = if vertical {
-            let y = r.top() + r.height() * s;
-            (pos2(r.left(), y), pos2(r.right(), y), pos2(r.center().x, y))
-        } else {
-            let x = r.left() + r.width() * s;
-            (pos2(x, r.top()), pos2(x, r.bottom()), pos2(x, r.center().y))
-        };
-        let off = probe - a;
+    let colour_at = |p: Pos2| {
+        let off = p - a;
         let t = if len_sq > 0.0 && len_sq.is_finite() { ((off.x * d.x + off.y * d.y) / len_sq).clamp(0.0, 1.0) } else { 0.0 };
-        let col = ramp_colour(from, to, t);
-        mesh.colored_vertex(p0, col);
-        mesh.colored_vertex(p1, col);
+        ramp_colour(from, to, t)
+    };
+    let outline = rounded_outline(r, radius);
+    for &p in &outline {
+        mesh.colored_vertex(p, colour_at(p));
     }
-    for i in 0..steps as u32 {
-        let v = i * 2;
-        mesh.add_triangle(v, v + 1, v + 2);
-        mesh.add_triangle(v + 1, v + 3, v + 2);
+    let hub = outline.len() as u32;
+    mesh.colored_vertex(r.center(), colour_at(r.center()));
+    for i in 0..hub {
+        mesh.add_triangle(hub, 1 + i, 1 + (i + 1) % hub);
     }
     mesh
 }
@@ -120,7 +144,7 @@ pub fn paint_prims(p: &Painter, origin: Pos2, prims: &[Prim], z: f32) {
                         let (a, b) = (pt(start[0], start[1]), pt(end[0], end[1]));
                         let len_sq = (b - a).length_sq();
                         if len_sq.is_finite() && len_sq > MIN_RAMP_SPAN {
-                            p.add(egui::Shape::mesh(ramp_mesh(r, rgba(*from), rgba(*to), a, b)));
+                            p.add(egui::Shape::mesh(ramp_mesh(r, radius, rgba(*from), rgba(*to), a, b)));
                         } else {
                             p.rect_filled(r, radius, rgba(f.start()));
                         }
@@ -762,16 +786,17 @@ pub(crate) mod tests {
         assert_ne!(seen[0], seen[1], "the dark preset paints a different surface and ramp");
     }
 
-    /// All vertex colours of the meshes painted, in paint order.
+    /// All vertex colours of the meshes painted, in paint order. Each mesh appends its fan hub last,
+    /// and the hub is not part of the outline, so the list starts and ends on the ramp stops.
     fn mesh_colours(out: &egui::FullOutput) -> Vec<Color32> {
-        out.shapes
-            .iter()
-            .filter_map(|cs| match &cs.shape {
-                egui::Shape::Mesh(m) => Some(m.vertices.iter().map(|v| v.color)),
-                _ => None,
-            })
-            .flatten()
-            .collect()
+        let mut colours = Vec::new();
+        for cs in &out.shapes {
+            if let egui::Shape::Mesh(m) = &cs.shape {
+                let outline = m.vertices.len().saturating_sub(1);
+                colours.extend(m.vertices.iter().take(outline).map(|v| v.color));
+            }
+        }
+        colours
     }
 
     fn gradient_bar(fill: Fill) -> Vec<Prim> {
@@ -787,10 +812,66 @@ pub(crate) mod tests {
         let mut out = ctx.run_ui(Default::default(), |ui| paint_prims(ui.painter(), pos2(0.0, 0.0), &prims, 1.0));
         let colours = mesh_colours(&out);
         out.textures_delta.clear();
-        assert!(colours.len() > 4, "the ramp is subdivided, got {} vertices", colours.len());
+        // A fan over the outline interpolates a two-stop ramp exactly: every vertex takes the colour
+        // its own projection gives, so the shared hub never bends the ramp away from the axis.
+        assert!(colours.len() >= 4, "the fan outlines the bar, got {} vertices", colours.len());
         assert_eq!(colours.first(), Some(&rgba(from)), "the near stop is exact");
         assert_eq!(colours.last(), Some(&rgba(to)), "the far stop is exact");
         assert!(colours.iter().all(|c| *c == rgba(from) || *c == rgba(to) || (c.r() >= 10 && c.r() <= 200)), "no colour outside the ramp");
+    }
+    /// 02-02-04: a gradient bar keeps its rounded tips in the app. The mesh is a fan over the
+    /// rounded outline, so every corner radius cuts its corner away and a vertex still sits on each
+    /// arc, while the vertex colours keep the exact ramp stops.
+    #[test]
+    fn a_gradient_bar_keeps_every_corner_radius_in_the_mesh() {
+        let (from, to) = ([200u8, 10, 10, 255], [10u8, 10, 200, 255]);
+        let radii = [12.0, 0.0, 8.0, 4.0];
+        let prims = vec![Prim::Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 40.0,
+            h: 100.0,
+            fill: Some(Fill::Linear { from, to, start: [20.0, 0.0], end: [20.0, 100.0] }),
+            stroke: None,
+            radii,
+        }];
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(Default::default(), |ui| paint_prims(ui.painter(), pos2(0.0, 0.0), &prims, 1.0));
+        let verts: Vec<(Pos2, Color32)> = out
+            .shapes
+            .iter()
+            .filter_map(|cs| match &cs.shape {
+                egui::Shape::Mesh(m) => Some(m.vertices.iter().map(|v| (v.pos, v.color))),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        out.textures_delta.clear();
+        assert_eq!(corner_radius(radii, 1.0), egui::CornerRadius { nw: 12, ne: 0, se: 8, sw: 4 });
+
+        let hub = verts.last().map(|(p, _)| *p);
+        let outline: Vec<(Pos2, Color32)> = verts[..verts.len().saturating_sub(1)].to_vec();
+        assert!(outline.len() > 8, "the outline is tessellated, got {} vertices", outline.len());
+
+        // Each rounded corner: its centre and radius. A vertex of the cut-out square that the arc
+        // removes would sit further than the radius from the centre, so none may.
+        let arcs = [(pos2(12.0, 12.0), 12.0f32), (pos2(32.0, 92.0), 8.0), (pos2(4.0, 96.0), 4.0)];
+        let inside = |p: Pos2, c: Pos2, rad: f32| (p.x - c.x).abs() <= rad && (p.y - c.y).abs() <= rad;
+        for (c, rad) in arcs {
+            let corner: Vec<Pos2> = outline.iter().map(|(p, _)| *p).filter(|p| inside(*p, c, rad)).collect();
+            assert!(!corner.is_empty(), "corner at {c:?} with radius {rad} has no vertices");
+            assert!(corner.iter().all(|p| p.distance(c) <= rad + 0.5), "corner at {c:?} keeps its square point");
+            assert!(corner.iter().any(|p| (p.distance(c) - rad).abs() <= 0.5), "corner at {c:?} has no arc");
+        }
+        // The north-east corner takes no radius, so its square point stays: the radii are independent.
+        assert!(outline.iter().any(|(p, _)| *p == pos2(40.0, 0.0)), "the square corner is still a point");
+        assert!(hub.is_some(), "the fan has a hub");
+
+        let at = |y: f32| outline.iter().filter(|(p, _)| (p.y - y).abs() < 1e-3).map(|(_, c)| *c).collect::<Vec<Color32>>();
+        let (top, bottom) = (at(0.0), at(100.0));
+        assert!(!top.is_empty() && !bottom.is_empty());
+        assert!(top.iter().all(|c| *c == rgba(from)), "the near stop is exact at the ramp start");
+        assert!(bottom.iter().all(|c| *c == rgba(to)), "the far stop is exact at the ramp end");
     }
 
     /// RTL sheets move a chart as a rigid object to a mirrored origin, so the vertex colours carry
