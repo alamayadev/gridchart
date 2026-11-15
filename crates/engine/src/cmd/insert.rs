@@ -99,7 +99,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Chart Properties",
             ["Chart Design"],
             None,
-            "{chart?: id, type?, subtype?, title?, legend?: none|bottom|top|left|right, dataLabels?, gridlines?, dataTable?: bool, dataTableKeys?: bool, dataTableHorizontalBorder?: bool, dataTableVerticalBorder?: bool, dataTableOutline?: bool (data tables: column/bar/line/area and compatible combo charts), quartiles?: exclusive|inclusive, style?, holeSize?, firstSliceAngle?, xTitle?, yTitle?, at?, width?, height?, dx?, dy?}",
+            "{chart?: id, type?, subtype?, title?, legend?: none|bottom|top|left|right, dataLabels?, gridlines?, dataTable?: bool, dataTableKeys?: bool, dataTableHorizontalBorder?: bool, dataTableVerticalBorder?: bool, dataTableOutline?: bool (data tables: column/bar/line/area and compatible combo charts), quartiles?: exclusive|inclusive, style?: 0..48, holeSize?, firstSliceAngle?, xTitle?, yTitle?, at?, width?, height?, dx?, dy?}",
             has_doc,
             chart_set
         ),
@@ -849,7 +849,7 @@ pub fn build_chart(s: &Session, p: &Json) -> Result<(usize, Chart)> {
         data_labels: false,
         data_table: None,
         gridlines: !matches!(kind, ChartKind::Pie | ChartKind::Doughnut | ChartKind::Treemap | ChartKind::Sunburst | ChartKind::Funnel),
-        style: 1,
+        style: gridcraft_model::STYLE_POLISHED,
         hole_size: 75,
         first_slice_angle: 0,
         x_title: None,
@@ -892,6 +892,15 @@ fn chart_set(s: &mut Session, p: &Json) -> Result<Json> {
             _ => Err(bad("quartiles", "expected exclusive or inclusive")),
         })
         .transpose()?;
+    // An out-of-range style is a caller error, not something to silently clamp: clamping would
+    // apply a preset the caller never asked for and lose their intent on the next round trip.
+    let style = match p.get("style") {
+        None => None,
+        Some(_) => match u32_param(p, "style") {
+            Some(v) if v <= gridcraft_model::STYLE_MAX => Some(v),
+            _ => return Err(bad("style", "expected an integer 0 to 48")),
+        },
+    };
     edit(s, |cx| {
         let sh = cx.sheet_mut(si)?;
         let Some(c) = sh.charts.get_mut(ci) else { return Ok(Json::Null) };
@@ -925,8 +934,8 @@ fn chart_set(s: &mut Session, p: &Json) -> Result<Json> {
         if let Some(v) = bool_param(p, "gridlines") {
             c.gridlines = v;
         }
-        if let Some(v) = u32_param(p, "style") {
-            c.style = v.clamp(1, 16);
+        if let Some(v) = style {
+            c.style = v;
         }
         if let Some(v) = u32_param(p, "holeSize") {
             c.hole_size = v.clamp(10, 90) as u8;
@@ -1881,6 +1890,32 @@ mod tests {
         let chart = d.wb.active().unwrap().charts.last().unwrap();
         let values: Vec<&str> = chart.series.iter().map(|x| x.values.as_str()).collect();
         assert_eq!(values, ["Sheet1!$C$700000:$C$700010"]);
+    }
+
+    #[test]
+    fn chart_set_style_accepts_the_full_range_and_rejects_the_rest() {
+        let mut s = Session::new();
+        s.new_workbook();
+        s.execute("range.setValues", json!({"range": "A1", "values": [["Q", "S"], ["Q1", 10], ["Q2", 20]]})).unwrap();
+        s.execute("insert.chart", json!({"range": "A1:B3", "type": "column"})).unwrap();
+        let style = |s: &Session| s.doc().unwrap().wb.active().unwrap().charts.last().unwrap().style;
+
+        assert_eq!(style(&s), gridcraft_model::STYLE_POLISHED, "a new chart opens on the polished default");
+        for want in [0u32, 2, 47, gridcraft_model::STYLE_MAX] {
+            s.execute("chart.set", json!({"style": want})).unwrap();
+            assert_eq!(style(&s), want, "style {want} should be stored verbatim");
+        }
+
+        // Out of range is a caller error, never a silent clamp to a preset they did not ask for.
+        for bad_style in [json!(49), json!(u32::MAX), json!(-1), json!(1.5), json!("vibrant"), json!(null)] {
+            let err = s.execute("chart.set", json!({"style": bad_style})).unwrap_err();
+            assert!(format!("{err}").contains("style"), "error should name the style param: {err}");
+            assert_eq!(style(&s), gridcraft_model::STYLE_MAX, "a rejected style must not change the chart");
+        }
+
+        // The accepted write is one undoable step back to the previous preset.
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(style(&s), 47);
     }
 
     #[test]

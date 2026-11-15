@@ -279,7 +279,7 @@ pub fn read_chart(root: &El) -> Option<Chart> {
             outline: bool_val(t, "showOutline"),
         }),
         gridlines: val_axes.iter().any(|a| a.child("majorGridlines").is_some()),
-        style: root.child_val("style").and_then(|v| v.parse().ok()).unwrap_or(2),
+        style: root.child_val("style").and_then(|v| v.trim().parse().ok()).unwrap_or(gridcraft_model::STYLE_DEFAULT),
         hole_size,
         first_slice_angle,
         x_title: x_ax.and_then(|a| a.child("title")).and_then(rich_title),
@@ -760,6 +760,8 @@ pub fn write_chart(wb: &Workbook, si: usize, ch: &Chart, book_name: &str) -> Str
     );
     if (1..=48).contains(&ch.style) {
         let _ = write!(s, "<c:style val=\"{}\"/>", ch.style);
+    } else if ch.style == 0 {
+        let _ = write!(s, "<c:style val=\"0\"/>");
     }
     // A PivotChart names its PivotTable behind the workbook in brackets (`[Book.xlsx]Sheet2!PivotTable1`);
     // without the brackets Excel shows an ordinary chart.

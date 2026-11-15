@@ -1,8 +1,8 @@
 use super::frame::{Bx, CatAxis, ValAxis, frame, on, value_range};
 use super::legend::{cat_label, point_color};
 use super::{
-    AXIS, Chart, ChartData, Ctx, DOWN, Fmt, GRID, HAlign, LABEL_SIZE, MAX_CATS, MAX_LABELS, MAX_MARKERS, MAX_SERIES, MAX_WEDGES, Prim,
-    QuartileMethod, Rgba, STOCK, SeriesData, TAU, TEXT, UP, VAlign, WHITE, clean, nice_scale,
+    Chart, ChartData, Ctx, DOWN, Fmt, HAlign, LABEL_SIZE, MAX_CATS, MAX_LABELS, MAX_MARKERS, MAX_SERIES, MAX_WEDGES, Prim, QuartileMethod, Rgba,
+    SeriesData, TAU, UP, VAlign, WHITE, clean, nice_scale,
 };
 
 // ---------------------------------------------------------------- histogram
@@ -50,7 +50,7 @@ pub(super) fn histogram(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx
         let x = plot.x + b as f32 * cw;
         ctx.rect(x, top, cw, plot.bottom() - top, s.color, Some((WHITE, 0.75)));
         if chart.data_labels {
-            ctx.text(x + cw / 2.0, top - 2.0, &c.to_string(), LABEL_SIZE, TEXT, (HAlign::Center, VAlign::Bottom));
+            ctx.text(x + cw / 2.0, top - 2.0, &c.to_string(), LABEL_SIZE, ctx.style.text, (HAlign::Center, VAlign::Bottom));
         }
     }
 }
@@ -109,11 +109,11 @@ pub(super) fn waterfall(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx
         let (yb, yt) = (vy(*b), vy(*t));
         ctx.rect(x, yb.min(yt), bw, (yb - yt).abs().max(0.5), color, None);
         if j + 1 < bars.len() && ncat <= 500 {
-            ctx.out.push(Prim::Line { pts: vec![[x + bw, yt], [x + cw, yt]], color: AXIS, width: 0.75, dash: true });
+            ctx.out.push(Prim::Line { pts: vec![[x + bw, yt], [x + cw, yt]], color: ctx.style.axis, width: 0.75, dash: true });
         }
         if chart.data_labels && ncat <= MAX_LABELS {
             let v = if *kind == 0 { *t } else { t - b };
-            ctx.text(x + bw / 2.0, yb.min(yt) - 2.0, &f.format(v, None), LABEL_SIZE, TEXT, (HAlign::Center, VAlign::Bottom));
+            ctx.text(x + bw / 2.0, yb.min(yt) - 2.0, &f.format(v, None), LABEL_SIZE, ctx.style.text, (HAlign::Center, VAlign::Bottom));
         }
     }
 }
@@ -152,11 +152,11 @@ pub(super) fn funnel(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx) {
             let yc = y + bh / 2.0;
             if chart.data_labels {
                 let t = f.format(s.values.get(j).copied().flatten().unwrap_or(0.0), None);
-                let color = if ctx.tw(&t, LABEL_SIZE) + 4.0 <= bw { on(s.color) } else { TEXT };
+                let color = if ctx.tw(&t, LABEL_SIZE) + 4.0 <= bw { on(s.color) } else { ctx.style.text };
                 ctx.text(plot.cx(), yc, &t, LABEL_SIZE, color, (HAlign::Center, VAlign::Middle));
             }
             let l = ctx.fit(labels.get(j).map(String::as_str).unwrap_or(""), LABEL_SIZE, lw - 8.0);
-            ctx.text(plot.x - 6.0, yc, &l, LABEL_SIZE, TEXT, (HAlign::Right, VAlign::Middle));
+            ctx.text(plot.x - 6.0, yc, &l, LABEL_SIZE, ctx.style.text, (HAlign::Right, VAlign::Middle));
         }
     }
 }
@@ -464,16 +464,16 @@ pub(super) fn radar(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx) {
             } else if let Some(p) = ring.first().copied() {
                 ring.push(p);
             }
-            ctx.line(ring, GRID, 0.75);
+            ctx.line(ring, ctx.style.grid, 0.75);
         }
         if ti % every == 0 {
-            ctx.text(cx - 3.0, cy - rr, &f.format(t, Some(sc.step)), LABEL_SIZE * 0.9, TEXT, (HAlign::Right, VAlign::Middle));
+            ctx.text(cx - 3.0, cy - rr, &f.format(t, Some(sc.step)), LABEL_SIZE * 0.9, ctx.style.text, (HAlign::Right, VAlign::Middle));
         }
     }
     let step = ncat.div_ceil(72).max(1);
     for j in (0..ncat).step_by(step) {
         let a = ang(j);
-        ctx.line(vec![[cx, cy], pt(a, r)], GRID, 0.75);
+        ctx.line(vec![[cx, cy], pt(a, r)], ctx.style.grid, 0.75);
         let p = pt(a, r + 6.0);
         let (sa, ca) = (a.sin(), a.cos());
         let align = if sa > 0.1 {
@@ -491,7 +491,7 @@ pub(super) fn radar(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx) {
             VAlign::Middle
         };
         let t = ctx.fit(labels.get(j).map(String::as_str).unwrap_or(""), LABEL_SIZE, lw.max(20.0));
-        ctx.text(p[0], p[1], &t, LABEL_SIZE, TEXT, (align, valign));
+        ctx.text(p[0], p[1], &t, LABEL_SIZE, ctx.style.text, (align, valign));
     }
     for s in &data.series {
         let mut pts: Vec<[f32; 2]> = (0..ncat).map(|j| pt(ang(j), sc.frac(s.values.get(j).copied().flatten().unwrap_or(sc.min)) * r)).collect();
@@ -594,20 +594,21 @@ pub(super) fn stock(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx) {
     for j in 0..ncat {
         let c = plot.x + (j as f32 + 0.5) * cw;
         if let (Some(h), Some(l)) = (get(high, j), get(low, j)) {
-            ctx.vline(c, vy(h), vy(l), STOCK, 1.25);
+            ctx.vline(c, vy(h), vy(l), ctx.style.stock, 1.25);
         }
         match (get(open, j), get(close, j)) {
             (Some(o), Some(cl)) => {
                 let (yo, yc) = (vy(o), vy(cl));
                 let bw = (cw * 0.5).max(1.0);
-                let fill = if cl >= o { WHITE } else { STOCK };
-                ctx.rect(c - bw / 2.0, yo.min(yc), bw, (yo - yc).abs().max(0.75), fill, Some((STOCK, 1.0)));
+                // An up candle is hollow: its interior is the card, so it follows a dark preset.
+                let fill = if cl >= o { ctx.style.card } else { ctx.style.stock };
+                ctx.rect(c - bw / 2.0, yo.min(yc), bw, (yo - yc).abs().max(0.75), fill, Some((ctx.style.stock, 1.0)));
             }
             (None, Some(cl)) => {
                 if high.is_some() {
-                    ctx.hline(c, c + tick, vy(cl), STOCK, 1.25);
+                    ctx.hline(c, c + tick, vy(cl), ctx.style.stock, 1.25);
                 } else {
-                    ctx.out.push(Prim::Circle { cx: c, cy: vy(cl), r: 2.5, fill: Some(STOCK), stroke: None });
+                    ctx.out.push(Prim::Circle { cx: c, cy: vy(cl), r: 2.5, fill: Some(ctx.style.stock), stroke: None });
                 }
             }
             _ => {}

@@ -962,3 +962,69 @@ fn chart_budget_counts_path_points_and_drops_charts_that_do_not_fit() {
     assert!(pics.chart((0, 1), || vec![line(1000)]).is_none());
     assert!(pics.charts.is_empty() && pics.rejected_charts.contains(&(0, 1)));
 }
+
+/// STYL-04: one resolved scene carries the preset's tokens all the way out — into the built-in
+/// rasteriser, the SVG emitter and the PDF content stream — not just into the primitives.
+#[test]
+fn style_tokens_reach_the_raster_svg_and_pdf_backends() {
+    const W: u32 = 480;
+    const H: u32 = 288;
+
+    fn hex(c: [u8; 4]) -> String {
+        format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2])
+    }
+    /// The PDF writer's number format, mirrored so the assertion reads the real content stream.
+    fn unit(v: u8) -> String {
+        let m = (u32::from(v) * 1000 + 127) / 255;
+        match m {
+            0 => "0".to_string(),
+            1000 => "1".to_string(),
+            _ => {
+                let mut s = format!("0.{m:03}");
+                while s.ends_with('0') {
+                    s.pop();
+                }
+                s
+            }
+        }
+    }
+    fn fill_op(c: [u8; 4]) -> String {
+        format!("{} {} {} rg", unit(c[0]), unit(c[1]), unit(c[2]))
+    }
+
+    let mut s = s();
+    s.execute("range.setValues", json!({"range": "A1", "values": [["Fruit", "Qty"], ["Apples", 3], ["Pears", 5]]})).unwrap();
+    s.execute("insert.chart", json!({"range": "A1:B3", "type": "column"})).unwrap();
+
+    let mut seen = Vec::new();
+    for id in [0u32, 4] {
+        s.execute("chart.set", json!({"style": id})).unwrap();
+        let style = gridcraft_chart::chart_style(id);
+        let (card, ramp, pixels, svg) = {
+            let d = s.doc().unwrap();
+            let wb = &d.wb;
+            let ch = &wb.active().unwrap().charts[0];
+            let data = gridcraft_chart::resolve(wb, 0, ch);
+            let prims = gridcraft_chart::render(ch, &data, W as f32, H as f32, &super::draw::PdfMeasure);
+            let card = match prims.first() {
+                Some(gridcraft_chart::Prim::Rect { fill: Some(f), .. }) => *f,
+                other => panic!("the first primitive of a chart is the card, got {other:?}"),
+            };
+            let pixels = gridcraft_chart::rasterize(&prims, W, H, [255, 255, 255, 255]);
+            let svg = crate::chart_svg::chart_svg(wb, 0, ch, "", crate::chart_svg::MAX_PAGE_SVG_BYTES).unwrap().unwrap();
+            (card, data.palette.first().copied().unwrap_or([0, 0, 0, 255]), pixels, svg)
+        };
+        assert_eq!(card, style.card, "style {id}: the card primitive paints the resolved surface");
+        let at = (2 * W as usize + 2) * 4;
+        assert_eq!(&pixels[at..at + 4], &style.card[..], "style {id}: the PNG card pixel");
+        assert!(svg.contains(&format!("fill=\"{}\"", hex(style.card))), "style {id}: the SVG card fill");
+        assert!(svg.contains(&format!("fill=\"{}\"", hex(style.text))), "style {id}: the SVG ink");
+        let (pdf, _) = pdf_of(&mut s, json!({}));
+        assert!(contains(&pdf, &fill_op(style.card)), "style {id}: the PDF card fill operator");
+        assert!(contains(&pdf, &fill_op(style.text)), "style {id}: the PDF ink operator");
+        seen.push((card, ramp, pdf));
+    }
+    assert_ne!(seen[0].0, seen[1].0, "the light and dark presets paint different cards");
+    assert_ne!(seen[0].1, seen[1].1, "and different series ramps");
+    assert_ne!(seen[0].2, seen[1].2, "and different PDF content streams");
+}

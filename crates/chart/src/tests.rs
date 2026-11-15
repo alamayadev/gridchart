@@ -582,9 +582,12 @@ fn resolve_from_workbook() {
     assert_eq!(s0.name, "Revenue");
     assert_eq!(s0.values, vec![Some(100.0), Some(250.0), Some(175.0)]);
     assert_eq!(s0.number_format, "$#,##0");
-    assert_eq!(s0.color, series_color(&wb.theme, 0));
-    let t = wb.theme.colors[4];
-    assert_eq!(s0.color, [(t >> 16) as u8, (t >> 8) as u8, t as u8, 255]);
+    assert_eq!(s0.color, series_color(&c, 0));
+    assert_eq!(s0.color, chart_style_preset(c.style)[0]);
+    // D-01: the workbook theme's accents never reach a chart fill, however loud they are.
+    let mut themed = wb.clone();
+    themed.theme.colors[4] = 0x4F6D8A;
+    assert_eq!(resolve(&themed, 0, &c).series[0].color, s0.color);
     let s1 = &d.series[1];
     assert_eq!(s1.name, "Series2");
     assert_eq!(s1.values, vec![None, Some(5.0), None]);
@@ -667,11 +670,74 @@ fn resolve_from_workbook() {
 
 #[test]
 fn palette_beyond_six_series() {
-    let theme = gridcraft_model::Theme::default();
-    let p = default_palette(&theme, 14);
+    let c = chart(ChartKind::ColumnClustered);
+    let p = default_palette(&c, 14);
     assert_eq!(p.len(), 14);
     assert_ne!(p[0], p[6]);
     assert_ne!(p[6], p[12]);
+}
+
+/// The style contract, end to end: a preset ID must reach the primitives — the card, the ink on
+/// it and the series ramp — so all four backends, which only ever read `Prim`s, follow it.
+#[test]
+fn style_preset_reaches_the_primitives() {
+    let wb = Workbook::new();
+    let mut c = chart(ChartKind::ColumnClustered);
+    c.series = vec![Series {
+        name: Some("S1".into()),
+        categories: None,
+        values: "{5,3,4}".into(),
+        bubble_sizes: None,
+        color: None,
+        secondary: false,
+        kind: None,
+        quartiles: Default::default(),
+        smooth: false,
+        trendlines: Vec::new(),
+    }];
+    let mut fills = |style: u32| -> (Rgba, Rgba, Vec<Rgba>) {
+        c.style = style;
+        let d = resolve(&wb, 0, &c);
+        let prims = render(&c, &d, 480.0, 288.0, &ApproxMeasure);
+        let card = match prims.first() {
+            Some(Prim::Rect { fill: Some(f), .. }) => *f,
+            other => panic!("prims[0] should be the card, got {other:?}"),
+        };
+        let ink = prims
+            .iter()
+            .find_map(|p| match p {
+                Prim::Text { color, .. } => Some(*color),
+                _ => None,
+            })
+            .expect("the chart draws a title");
+        (card, ink, d.palette.clone())
+    };
+
+    // The default is the light card the chart has always drawn, unchanged.
+    let (card0, ink0, _) = fills(0);
+    assert_eq!(card0, [0xFF, 0xFF, 0xFF, 0xFF]);
+    assert_eq!(card0, chart_style(0).card);
+    assert_eq!(ink0, chart_style(0).text);
+    assert_eq!(fills(1), fills(0), "1 is the same polished default as 0");
+
+    // The dark preset paints its own surface with light ink.
+    let (card_dark, ink_dark, _) = fills(4);
+    assert_eq!(card_dark, chart_style(4).card);
+    assert_ne!(card_dark, card0);
+    assert_eq!(ink_dark, chart_style(4).text);
+    assert!(card_dark[0] < 0x60 && ink_dark[0] > 0xC0, "dark card needs light ink: {card_dark:?} / {ink_dark:?}");
+
+    // Every preset must actually own a different ramp, or the style ID means nothing.
+    let ramps: Vec<Vec<Rgba>> = [0u32, 2, 3, 4, 5, 6].iter().map(|s| fills(*s).2).collect();
+    for (a, ra) in ramps.iter().enumerate() {
+        for (b, rb) in ramps.iter().enumerate().skip(a + 1) {
+            assert_ne!(ra, rb, "presets {a} and {b} resolve to the same ramp");
+        }
+    }
+
+    // An out-of-range ID falls back to the default instead of panicking.
+    assert_eq!(fills(49), fills(0));
+    assert_eq!(fills(u32::MAX), fills(0));
 }
 
 #[test]
@@ -1348,7 +1414,7 @@ fn funnel_value_labels_follow_the_data_labels_flag() {
 }
 
 #[test]
-fn pie_points_follow_workbook_theme() {
+fn pie_points_follow_the_chart_preset() {
     let mut wb = Workbook::new();
     wb.theme.colors[4] = 0x4F6D8A;
     wb.theme.colors[5] = 0x8AA1B8;
@@ -1366,8 +1432,12 @@ fn pie_points_follow_workbook_theme() {
         trendlines: Vec::new(),
     }];
     let d = resolve(&wb, 0, &c);
-    let expected = vec![series_color(&wb.theme, 0), series_color(&wb.theme, 1)];
-    assert_eq!(expected, vec![[0x4F, 0x6D, 0x8A, 0xFF], [0x8A, 0xA1, 0xB8, 0xFF]]);
+    // D-01: the chart's preset owns the ramp, so the loud theme accents above must not leak in.
+    let ramp = chart_style_preset(c.style);
+    let expected = vec![ramp[0], ramp[1]];
+    assert_eq!(series_color(&c, 0), ramp[0]);
+    assert_ne!(ramp[0], [0x4F, 0x6D, 0x8A, 0xFF]);
+    assert_ne!(ramp[1], [0x8A, 0xA1, 0xB8, 0xFF]);
     let legend: Vec<Rgba> = legend_entries(&c, &d).iter().map(|e| e.1).collect();
     assert_eq!(legend, expected);
     let fills: Vec<Rgba> = render(&c, &d, 480.0, 288.0, &ApproxMeasure)
@@ -1383,14 +1453,19 @@ fn pie_points_follow_workbook_theme() {
         let legend: Vec<Rgba> = legend_entries(&c, &d).iter().map(|e| e.1).collect();
         assert_eq!(legend, expected, "{kind:?}");
     }
-    // Past the 36-colour cycle the points keep following the workbook theme.
+    // Past the 36-colour cycle the points keep following the chart's preset (D-02).
     c.kind = ChartKind::Pie;
     c.series[0].values = format!("{{{}}}", ["1"; 40].join(","));
     let d = resolve(&wb, 0, &c);
     let legend: Vec<Rgba> = legend_entries(&c, &d).iter().map(|e| e.1).collect();
     assert_eq!(legend.len(), 40);
-    assert_eq!(legend.get(37), Some(&series_color(&wb.theme, 37)));
-    assert_ne!(series_color(&wb.theme, 37), series_color(&gridcraft_model::Theme::default(), 37));
+    assert_eq!(legend.get(37), Some(&series_color(&c, 37)));
+    // A different workbook theme resolves to the very same colours.
+    let mut other = wb.clone();
+    other.theme.colors[4] = 0x112233;
+    let d2 = resolve(&other, 0, &c);
+    let legend2: Vec<Rgba> = legend_entries(&c, &d2).iter().map(|e| e.1).collect();
+    assert_eq!(legend2, legend, "the workbook theme must not change chart colours");
 }
 
 #[test]
