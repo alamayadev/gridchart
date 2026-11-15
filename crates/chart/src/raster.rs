@@ -2,7 +2,8 @@
 //! scan-converted with 4 vertical sub-samples and exact horizontal coverage (anti-aliased).
 //! Text is not drawn (tests check geometry, the UI draws real glyphs).
 
-use crate::{Prim, Rgba};
+use crate::render::MIN_GRADIENT_SPAN;
+use crate::{Fill, Prim, Rgba};
 
 /// Largest image we allocate (pixels).
 const MAX_PIXELS: u64 = 64 * 1024 * 1024;
@@ -23,6 +24,45 @@ const MAX_FILL_POINTS: usize = 1 << 22;
 const MAX_STROKE_POINTS: usize = 1 << 17;
 
 type Path = Vec<Vec<[f32; 2]>>;
+
+/// A two-stop ramp projected into canvas pixel space, or `None` for a solid fill or an axis too
+/// short for any backend to resolve. `rasterize` is public and takes primitives directly, so this
+/// is the local backstop; the chart crate flattens such ramps centrally in `sanitize.rs`.
+#[derive(Clone, Copy)]
+struct Ramp {
+    from: Rgba,
+    to: Rgba,
+    start: [f32; 2],
+    d: [f32; 2],
+    len_sq: f32,
+}
+
+impl Ramp {
+    fn of(fill: Fill) -> Option<Self> {
+        let Fill::Linear { from, to, start, end } = fill else { return None };
+        let d = [end[0] - start[0], end[1] - start[1]];
+        let len_sq = d[0] * d[0] + d[1] * d[1];
+        (len_sq.is_finite() && len_sq > MIN_GRADIENT_SPAN).then_some(Ramp { from, to, start, d, len_sq })
+    }
+
+    /// The ramp colour at a pixel centre: `t` is the projection of `(px + 0.5, py + 0.5)` onto the
+    /// axis, clamped. Both ends return their stop colour exactly (D-01): `a + (b - a) * 1.0` is not
+    /// always `b` in `f32`, so t = 0 and t = 1 take their own branch.
+    fn at(&self, px: usize, py: usize) -> Rgba {
+        let t = (((px as f32 + 0.5 - self.start[0]) * self.d[0] + (py as f32 + 0.5 - self.start[1]) * self.d[1]) / self.len_sq).clamp(0.0, 1.0);
+        if t <= 0.0 {
+            return self.from;
+        }
+        if t >= 1.0 {
+            return self.to;
+        }
+        let mut c = [0u8; 4];
+        for (k, out) in c.iter_mut().enumerate() {
+            *out = (self.from[k] as f32 + (self.to[k] as f32 - self.from[k] as f32) * t).round().clamp(0.0, 255.0) as u8;
+        }
+        c
+    }
+}
 
 struct Canvas {
     w: usize,
@@ -55,12 +95,15 @@ impl Canvas {
         }
     }
 
-    /// Fills a multi-contour path with the even-odd rule.
-    fn fill(&mut self, path: &Path, color: Rgba) {
+    /// Fills a multi-contour path with the even-odd rule. A ramp is sampled at each pixel centre,
+    /// so no pixel of a covered rectangle is more than half a pixel off the true ramp.
+    fn fill(&mut self, path: &Path, fill: Fill) {
         // Out of work, or more geometry than the allowance could ever scan: no edge list is built.
         if self.work == 0 || path.iter().map(Vec::len).fold(0usize, usize::saturating_add) > MAX_FILL_POINTS {
             return;
         }
+        let ramp = Ramp::of(fill);
+        let flat = fill.start();
         // Each edge as [top y, bottom y, x0, y0, x1, y1].
         let mut edges: Vec<[f32; 6]> = Vec::new();
         let (mut minx, mut miny, mut maxx, mut maxy) = (f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
@@ -153,7 +196,7 @@ impl Canvas {
             for px in x0..x1 {
                 let cov = self.acc.get(px - x0).copied().unwrap_or(0.0);
                 if cov > 0.0 {
-                    self.blend(px, py, color, cov);
+                    self.blend(px, py, ramp.map_or(flat, |r| r.at(px, py)), cov);
                 }
             }
         }
@@ -177,18 +220,32 @@ fn circle(cx: f32, cy: f32, r: f32) -> Vec<[f32; 2]> {
     c
 }
 
-fn rounded_rect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Vec<[f32; 2]> {
-    // A negative or NaN extent gives an upper bound of 0 (clamp panics if max < min or NaN).
-    let r = r.clamp(0.0, (w.min(h) / 2.0).max(0.0));
+/// One corner: an arc when it has room, else the square corner point the arc would start at.
+fn corner(v: &mut Vec<[f32; 2]>, cx: f32, cy: f32, r: f32, a0: f32, a1: f32) {
     if r < 0.5 {
+        v.push([cx, cy]);
+    } else {
+        v.extend(arc(cx, cy, r, a0, a1));
+    }
+}
+
+/// A rectangle whose corners round independently, in `[nw, ne, se, sw]` order.
+fn rounded_rect(x: f32, y: f32, w: f32, h: f32, radii: [f32; 4]) -> Vec<[f32; 2]> {
+    // A negative or NaN extent gives an upper bound of 0 (clamp panics if max < min or NaN), and a
+    // non-finite radius clamps to no rounding at all.
+    let limit = (w.min(h) / 2.0).max(0.0);
+    let r = radii.map(|v| if v.is_finite() { v.clamp(0.0, limit) } else { 0.0 });
+    let [nw, ne, se, sw] = r;
+    if r.iter().all(|v| *v < 0.5) {
         return vec![[x, y], [x + w, y], [x + w, y + h], [x, y + h]];
     }
     use std::f32::consts::{FRAC_PI_2, PI};
+    // Corners clockwise from the north-east, as when there was one radius for all four.
     let mut v = Vec::new();
-    v.extend(arc(x + w - r, y + r, r, 0.0, FRAC_PI_2));
-    v.extend(arc(x + w - r, y + h - r, r, FRAC_PI_2, PI));
-    v.extend(arc(x + r, y + h - r, r, PI, PI + FRAC_PI_2));
-    v.extend(arc(x + r, y + r, r, PI + FRAC_PI_2, 2.0 * PI));
+    corner(&mut v, x + w - ne, y + ne, ne, 0.0, FRAC_PI_2);
+    corner(&mut v, x + w - se, y + h - se, se, FRAC_PI_2, PI);
+    corner(&mut v, x + sw, y + h - sw, sw, PI, PI + FRAC_PI_2);
+    corner(&mut v, x + nw, y + nw, nw, PI + FRAC_PI_2, 2.0 * PI);
     v
 }
 
@@ -259,26 +316,27 @@ pub fn rasterize(prims: &[Prim], w: u32, h: u32, background: Rgba) -> Vec<u8> {
     for p in prims {
         match p {
             Prim::Rect { x, y, w, h, fill, stroke, radii } => {
+                let rr = radii.map(|v| if v.is_finite() { v } else { 0.0 });
                 if let Some(f) = fill {
-                    cv.fill(&vec![rounded_rect(*x, *y, *w, *h, radii[0])], f.start());
+                    cv.fill(&vec![rounded_rect(*x, *y, *w, *h, rr)], *f);
                 }
                 if let Some((c, sw)) = stroke {
                     let sw = sw.clamp(0.5, 50.0);
-                    let outer = rounded_rect(x - sw / 2.0, y - sw / 2.0, w + sw, h + sw, radii[0] + sw / 2.0);
-                    let inner = rounded_rect(x + sw / 2.0, y + sw / 2.0, (w - sw).max(0.0), (h - sw).max(0.0), (radii[0] - sw / 2.0).max(0.0));
-                    cv.fill(&vec![outer, inner], *c);
+                    let outer = rounded_rect(x - sw / 2.0, y - sw / 2.0, w + sw, h + sw, rr.map(|v| v + sw / 2.0));
+                    let inner = rounded_rect(x + sw / 2.0, y + sw / 2.0, (w - sw).max(0.0), (h - sw).max(0.0), rr.map(|v| (v - sw / 2.0).max(0.0)));
+                    cv.fill(&vec![outer, inner], Fill::solid(*c));
                 }
             }
             Prim::Line { pts, color, width, dash } => {
                 for path in stroke_paths(pts, *width, *dash, false) {
-                    cv.fill(&path, *color);
+                    cv.fill(&path, Fill::solid(*color));
                 }
             }
             Prim::Polygon { pts, fill, stroke } => {
-                cv.fill(&vec![pts.clone()], *fill);
+                cv.fill(&vec![pts.clone()], Fill::solid(*fill));
                 if let Some((c, sw)) = stroke {
                     for path in stroke_paths(pts, *sw, false, true) {
-                        cv.fill(&path, *c);
+                        cv.fill(&path, Fill::solid(*c));
                     }
                 }
             }
@@ -291,20 +349,20 @@ pub fn rasterize(prims: &[Prim], w: u32, h: u32, background: Rgba) -> Vec<u8> {
                 } else {
                     c.push([*cx, *cy]);
                 }
-                cv.fill(&vec![c.clone()], *fill);
+                cv.fill(&vec![c.clone()], Fill::solid(*fill));
                 if let Some((sc, sw)) = stroke {
                     for path in stroke_paths(&c, *sw, false, true) {
-                        cv.fill(&path, *sc);
+                        cv.fill(&path, Fill::solid(*sc));
                     }
                 }
             }
             Prim::Circle { cx, cy, r, fill, stroke } => {
                 if let Some(f) = fill {
-                    cv.fill(&vec![circle(*cx, *cy, *r)], *f);
+                    cv.fill(&vec![circle(*cx, *cy, *r)], Fill::solid(*f));
                 }
                 if let Some((c, sw)) = stroke {
                     let sw = sw.clamp(0.5, 50.0);
-                    cv.fill(&vec![circle(*cx, *cy, r + sw / 2.0), circle(*cx, *cy, (r - sw / 2.0).max(0.0))], *c);
+                    cv.fill(&vec![circle(*cx, *cy, r + sw / 2.0), circle(*cx, *cy, (r - sw / 2.0).max(0.0))], Fill::solid(*c));
                 }
             }
             Prim::Text { .. } => {}
@@ -335,10 +393,10 @@ mod tests {
     fn fills_stop_when_the_work_allowance_is_spent() {
         let square = vec![vec![[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]]];
         let mut cv = Canvas { w: 4, h: 4, buf: vec![0; 64], acc: Vec::new(), work: 2 * SUB as u64 * 4 + 16 };
-        cv.fill(&square, [255; 4]);
+        cv.fill(&square, Fill::solid([255; 4]));
         assert!(cv.buf.iter().all(|&b| b == 255));
         cv.buf = vec![0; 64];
-        cv.fill(&square, [255; 4]);
+        cv.fill(&square, Fill::solid([255; 4]));
         assert!(cv.buf.iter().all(|&b| b == 0));
     }
 
@@ -364,5 +422,62 @@ mod tests {
         assert!(stroke_paths(&[[0.0, 0.0], [1e6, 0.0]], 1.0, true, false).len() <= 65_536);
         let prim = [Prim::Line { pts: vec![[0.0, 0.0], [10.0, 0.0]], color: [0, 0, 0, 255], width: 1.0, dash: true }];
         assert_eq!(rasterize(&prim, 1, 1, [0, 0, 0, 255]).len(), 4);
+    }
+
+    /// D-01: a ramp is exactly its stop colours at both ends. The stops sit on the sample centres
+    /// of the first and last covered rows, so the clamp is exercised at t = 0 and t = 1.
+    #[test]
+    fn a_gradient_rect_probes_exactly_at_both_stop_colours() {
+        let rect = Prim::Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 20.0,
+            h: 100.0,
+            fill: Some(Fill::Linear { from: [200, 10, 10, 255], to: [10, 10, 200, 255], start: [0.0, 0.5], end: [0.0, 99.5] }),
+            stroke: None,
+            radii: [0.0; 4],
+        };
+        let img = rasterize(&[rect], 20, 100, [0, 0, 0, 0]);
+        let at = |y: usize| (y * 20 + 10) * 4;
+        assert_eq!(img.get(at(0)..at(0) + 4), Some(&[200u8, 10, 10, 255][..]), "the first covered row is the from stop");
+        assert_eq!(img.get(at(99)..at(99) + 4), Some(&[10u8, 10, 200, 255][..]), "the last covered row is the to stop");
+    }
+
+    #[test]
+    fn a_gradient_scanline_interpolates_between_the_stops() {
+        let rect = Prim::Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 20.0,
+            h: 100.0,
+            fill: Some(Fill::Linear { from: [200, 10, 10, 255], to: [10, 10, 200, 255], start: [0.0, 0.5], end: [0.0, 99.5] }),
+            stroke: None,
+            radii: [0.0; 4],
+        };
+        let img = rasterize(&[rect], 20, 100, [0, 0, 0, 0]);
+        let mid = (50 * 20 + 10) * 4;
+        let px = img.get(mid..mid + 4).unwrap_or_default();
+        assert!(px[0] > 10 && px[0] < 200, "mid-ramp red lies between the stops: {px:?}");
+        assert!(px[2] > 10 && px[2] < 200, "mid-ramp blue is the mirror: {px:?}");
+        assert!((px[0] as i32 + px[2] as i32 - 210).unsigned_abs() <= 1, "the two channels mirror each other: {px:?}");
+    }
+
+    #[test]
+    fn corner_radii_clip_each_corner_independently() {
+        let rect =
+            Prim::Rect { x: 0.0, y: 0.0, w: 40.0, h: 40.0, fill: Some(Fill::solid([255, 0, 0, 255])), stroke: None, radii: [10.0, 0.0, 0.0, 0.0] };
+        let img = rasterize(&[rect], 40, 40, [0, 0, 0, 0]);
+        let at = |x: usize, y: usize| (y * 40 + x) * 4;
+        assert_eq!(img.get(at(0, 0)..at(0, 0) + 4), Some(&[0u8, 0, 0, 0][..]), "the rounded north-west corner stays clear");
+        assert_eq!(img.get(at(39, 0)..at(39, 0) + 4), Some(&[255u8, 0, 0, 255][..]), "the square north-east corner is painted");
+    }
+
+    #[test]
+    fn the_uniform_radius_path_is_unchanged() {
+        let rect = Prim::Rect { x: 0.0, y: 0.0, w: 40.0, h: 40.0, fill: Some(Fill::solid([255, 0, 0, 255])), stroke: None, radii: [8.0; 4] };
+        let img = rasterize(&[rect], 40, 40, [0, 0, 0, 0]);
+        let at = |x: usize, y: usize| (y * 40 + x) * 4;
+        assert_eq!(img.get(at(0, 0)..at(0, 0) + 4), Some(&[0u8, 0, 0, 0][..]), "the outer diagonal of the arc is clear");
+        assert_eq!(img.get(at(20, 20)..at(20, 20) + 4), Some(&[255u8, 0, 0, 255][..]), "the centre is filled");
     }
 }

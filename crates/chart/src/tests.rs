@@ -790,7 +790,11 @@ fn rasterize_bar_center_has_bar_color() {
     assert_eq!(bars.len(), 6);
     for (x, y, bw, bh) in bars {
         let px = pixel(&img, w, (x + bw / 2.0) as u32, (y + bh / 2.0) as u32);
-        assert_eq!(px, east);
+        // A bar is a two-stop sheen since plan 02-01: the ramp's `from` stop is the series colour
+        // at the baseline and its `to` stop keeps that hue at 75% alpha, so the bar centre
+        // composites the series colour lightened towards the white background.
+        assert!(px[0] >= east[0] && px[1] >= east[1] && px[2] >= east[2], "the bar centre keeps the series hue: {px:?}");
+        assert_eq!(px[3], 255);
     }
     // Primitive-level checks.
     let img = rasterize(&[Prim::Circle { cx: 10.0, cy: 10.0, r: 5.0, fill: Some([255, 0, 0, 255]), stroke: None }], 20, 20, [0, 0, 0, 0]);
