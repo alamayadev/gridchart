@@ -24,6 +24,128 @@ fn dash_px(z: f32) -> (f32, f32) {
     (gridcraft_chart::GRID_DASH.0 * z, gridcraft_chart::GRID_DASH.1 * z)
 }
 
+/// A fill resolved for the painter: the flat colour to use when a ramp has no real span, and the
+/// ramp itself — both stops with their endpoints in screen space — when it has one.
+struct PaintedFill {
+    flat: Color32,
+    ramp: Option<(Color32, Color32, Pos2, Pos2)>,
+    /// True when the fill was a ramp, even one with no span: a degenerate ramp keeps the mesh path
+    /// (flat, at its start stop) instead of becoming a solid fill.
+    ramp_fill: bool,
+}
+
+/// Resolves a `Prim` fill, mapping the ramp's chart-space endpoints through `to_screen`. A ramp
+/// whose span is degenerate (zero length, or not a number) is reported flat at its start stop, the
+/// same degradation the chart layer makes before a primitive is built (D-01).
+fn painted_fill(fill: &Option<Fill>, to_screen: impl Fn(f32, f32) -> Pos2) -> Option<PaintedFill> {
+    let f = fill.as_ref()?;
+    let flat = rgba(f.start());
+    let ramp = match f {
+        Fill::Linear { from, to, start, end } => {
+            let (a, b) = (to_screen(start[0], start[1]), to_screen(end[0], end[1]));
+            let len_sq = (b - a).length_sq();
+            (len_sq.is_finite() && len_sq > MIN_RAMP_SPAN).then_some((rgba(*from), rgba(*to), a, b))
+        }
+        Fill::Solid(_) => None,
+    };
+    Some(PaintedFill { flat, ramp, ramp_fill: matches!(f, Fill::Linear { .. }) })
+}
+
+/// A polygon triangulated as a strip between opposite edges, one colour throughout: the shape a
+/// ramp with no span paints, so a degenerate ramp stays on the mesh path.
+fn flat_strip_mesh(v: &[Pos2], col: Color32) -> egui::Mesh {
+    let mut mesh = egui::Mesh::default();
+    for &pt in v {
+        mesh.colored_vertex(pt, col);
+    }
+    let n = v.len();
+    let half = n / 2;
+    for i in 0..half.saturating_sub(1) {
+        let (t0, t1) = (i as u32, (i + 1) as u32);
+        let (b0, b1) = ((n - 1 - i) as u32, (n - 2 - i) as u32);
+        mesh.add_triangle(t0, b0, t1);
+        mesh.add_triangle(t1, b0, b1);
+    }
+    mesh
+}
+
+/// Paints a polygon fill: the ramp's strips when it has a span, otherwise the flat strip mesh for a
+/// degenerate ramp, or a solid path (convex) / mesh (concave). `paint_prims` keeps only the point
+/// mapping and the stroke.
+fn paint_polygon_fill(p: &Painter, v: &[Pos2], painted: PaintedFill) {
+    match painted.ramp {
+        Some((from, to, a, b)) => p.add(egui::Shape::mesh(ramp_strips(v, from, to, a, b))),
+        None if painted.ramp_fill => p.add(egui::Shape::mesh(flat_strip_mesh(v, painted.flat))),
+        None if is_convex(v) => p.add(PathShape { points: v.to_vec(), closed: true, fill: painted.flat, stroke: PathStroke::NONE }),
+        None => p.add(egui::Shape::mesh(area_mesh(v, painted.flat))),
+    };
+}
+
+/// One wedge as a triangle strip, plus the outline a stroke needs. A ramp colours each vertex by
+/// the projection of its screen position onto the ramp axis; without a span the wedge is flat.
+struct WedgeMesh {
+    centre: Pos2,
+    r_outer: f32,
+    r_inner: f32,
+    a0: f32,
+    a1: f32,
+    z: f32,
+    ramp: Option<(Color32, Color32, Pos2, Pos2)>,
+    flat: Color32,
+}
+
+impl WedgeMesh {
+    /// Segments along the arc: one every 0.05 radians, at least 2 and never more than 400.
+    fn steps(&self) -> usize {
+        (((self.a1 - self.a0).abs() / 0.05).ceil() as usize).clamp(2, 400)
+    }
+
+    fn at(&self, a: f32, r: f32) -> Pos2 {
+        pos2(self.centre.x + r * self.z * a.sin(), self.centre.y - r * self.z * a.cos())
+    }
+
+    /// The stop colour under `p`, projected onto the ramp axis; the ends are the stops exactly.
+    fn colour_at(&self, p: Pos2) -> Color32 {
+        let Some((from, to, sa, sb)) = self.ramp else { return self.flat };
+        let d = sb - sa;
+        let len_sq = d.length_sq();
+        let off = p - sa;
+        let t = if len_sq > 0.0 && len_sq.is_finite() { ((off.x * d.x + off.y * d.y) / len_sq).clamp(0.0, 1.0) } else { 0.0 };
+        ramp_colour(from, to, t)
+    }
+
+    fn fill(&self) -> egui::Mesh {
+        let steps = self.steps();
+        let mut mesh = egui::Mesh::default();
+        for i in 0..=steps {
+            let ang = self.a0 + (self.a1 - self.a0) * i as f32 / steps as f32;
+            let outer = self.at(ang, self.r_outer);
+            let inner = if self.r_inner > 0.0 { self.at(ang, self.r_inner) } else { self.centre };
+            mesh.colored_vertex(outer, self.colour_at(outer));
+            mesh.colored_vertex(inner, self.colour_at(inner));
+        }
+        for i in 0..steps as u32 {
+            let bi = i * 2;
+            mesh.add_triangle(bi, bi + 1, bi + 2);
+            mesh.add_triangle(bi + 1, bi + 3, bi + 2);
+        }
+        mesh
+    }
+
+    /// The closed outline: the outer arc, then the inner arc back, or the centre for a full pie.
+    fn outline(&self) -> Vec<Pos2> {
+        let steps = self.steps();
+        let arc = |r: f32| (0..=steps).map(move |i| self.at(self.a0 + (self.a1 - self.a0) * i as f32 / steps as f32, r));
+        let mut out: Vec<Pos2> = arc(self.r_outer).collect();
+        if self.r_inner > 0.0 {
+            out.extend(arc(self.r_inner).rev());
+        } else {
+            out.push(self.centre);
+        }
+        out
+    }
+}
+
 /// `[nw, ne, se, sw]` chart-space radii as egui takes them: scaled, rounded, and clamped to the
 /// range `CornerRadius` can hold, with a hostile value treated as a square corner.
 fn corner_radius(radii: [f32; 4], z: f32) -> egui::CornerRadius {
@@ -172,18 +294,12 @@ pub fn paint_prims(p: &Painter, origin: Pos2, prims: &[Prim], z: f32) {
                 let r = Rect::from_min_size(pt(*x, *y), vec2(w * z, h * z));
                 let chart_radii = radii.map(|v| if v.is_finite() { v } else { 0.0 });
                 let radius = corner_radius(chart_radii, z);
-                match fill {
-                    Some(Fill::Solid(c)) => {
-                        p.rect_filled(r, radius, rgba(*c));
+                match painted_fill(fill, pt) {
+                    Some(PaintedFill { ramp: Some((from, to, a, b)), .. }) => {
+                        p.add(egui::Shape::mesh(ramp_mesh(r, radius, from, to, a, b)));
                     }
-                    Some(f @ Fill::Linear { from, to, start, end }) => {
-                        let (a, b) = (pt(start[0], start[1]), pt(end[0], end[1]));
-                        let len_sq = (b - a).length_sq();
-                        if len_sq.is_finite() && len_sq > MIN_RAMP_SPAN {
-                            p.add(egui::Shape::mesh(ramp_mesh(r, radius, rgba(*from), rgba(*to), a, b)));
-                        } else {
-                            p.rect_filled(r, radius, rgba(f.start()));
-                        }
+                    Some(PaintedFill { flat, .. }) => {
+                        p.rect_filled(r, radius, flat);
                     }
                     None => {}
                 }
@@ -208,95 +324,28 @@ pub fn paint_prims(p: &Painter, origin: Pos2, prims: &[Prim], z: f32) {
                 if v.len() < 3 {
                     continue;
                 }
-                match fill {
-                    Some(Fill::Linear { from, to, start, end }) => {
-                        let (a, b) = (pt(start[0], start[1]), pt(end[0], end[1]));
-                        let len_sq = (b - a).length_sq();
-                        if len_sq.is_finite() && len_sq > MIN_RAMP_SPAN {
-                            p.add(egui::Shape::mesh(ramp_strips(&v, rgba(*from), rgba(*to), a, b)));
-                        } else {
-                            let col = rgba(*from);
-                            let mut mesh = egui::Mesh::default();
-                            for &ptv in &v {
-                                mesh.colored_vertex(ptv, col);
-                            }
-                            let n = v.len();
-                            let half = n / 2;
-                            for i in 0..half.saturating_sub(1) {
-                                let (t0, t1) = (i as u32, (i + 1) as u32);
-                                let (b0, b1) = ((n - 1 - i) as u32, (n - 2 - i) as u32);
-                                mesh.add_triangle(t0, b0, t1);
-                                mesh.add_triangle(t1, b0, b1);
-                            }
-                            p.add(egui::Shape::mesh(mesh));
-                        }
-                    }
-                    Some(Fill::Solid(c)) => {
-                        let col = rgba(*c);
-                        if is_convex(&v) {
-                            p.add(PathShape { points: v.clone(), closed: true, fill: col, stroke: PathStroke::NONE });
-                        } else {
-                            p.add(egui::Shape::mesh(area_mesh(&v, col)));
-                        }
-                    }
-                    None => {}
+                if let Some(painted) = painted_fill(fill, pt) {
+                    paint_polygon_fill(p, &v, painted);
                 }
                 if let Some((c, w)) = stroke {
                     p.add(PathShape::closed_line(v, PathStroke::new(w * z.max(0.5), rgba(*c))));
                 }
             }
             Prim::Wedge { cx, cy, r_outer, r_inner, a0, a1, fill, stroke } => {
-                let c = pt(*cx, *cy);
-                let steps = (((a1 - a0).abs() / 0.05).ceil() as usize).clamp(2, 400);
-                let at = |a: f32, r: f32| pos2(c.x + r * z * a.sin(), c.y - r * z * a.cos());
-                let ramp = match fill {
-                    Some(Fill::Linear { from, to, start, end }) => {
-                        let (sa, sb) = (pt(start[0], start[1]), pt(end[0], end[1]));
-                        let len_sq = (sb - sa).length_sq();
-                        if len_sq.is_finite() && len_sq > MIN_RAMP_SPAN { Some((rgba(*from), rgba(*to), sa, sb)) } else { None }
-                    }
-                    _ => None,
+                let painted = painted_fill(fill, pt);
+                let mesh = WedgeMesh {
+                    centre: pt(*cx, *cy),
+                    r_outer: *r_outer,
+                    r_inner: *r_inner,
+                    a0: *a0,
+                    a1: *a1,
+                    z,
+                    ramp: painted.as_ref().and_then(|f| f.ramp),
+                    flat: painted.map_or(Color32::TRANSPARENT, |f| f.flat),
                 };
-                let flat = match fill {
-                    Some(Fill::Linear { from, .. }) if ramp.is_none() => rgba(*from),
-                    Some(Fill::Solid(sc)) => rgba(*sc),
-                    Some(Fill::Linear { from, .. }) => rgba(*from),
-                    None => Color32::TRANSPARENT,
-                };
-                let mut mesh = egui::Mesh::default();
-                for i in 0..=steps {
-                    let ang = a0 + (a1 - a0) * i as f32 / steps as f32;
-                    let outer = at(ang, *r_outer);
-                    let inner = if *r_inner > 0.0 { at(ang, *r_inner) } else { c };
-                    let (oc, ic) = if let Some((from, to, sa, sb)) = ramp {
-                        let d = sb - sa;
-                        let len_sq = d.length_sq();
-                        let colour_at = |p: Pos2| {
-                            let off = p - sa;
-                            let t = if len_sq > 0.0 && len_sq.is_finite() { ((off.x * d.x + off.y * d.y) / len_sq).clamp(0.0, 1.0) } else { 0.0 };
-                            ramp_colour(from, to, t)
-                        };
-                        (colour_at(outer), colour_at(inner))
-                    } else {
-                        (flat, flat)
-                    };
-                    mesh.colored_vertex(outer, oc);
-                    mesh.colored_vertex(inner, ic);
-                }
-                for i in 0..steps as u32 {
-                    let bi = i * 2;
-                    mesh.add_triangle(bi, bi + 1, bi + 2);
-                    mesh.add_triangle(bi + 1, bi + 3, bi + 2);
-                }
-                p.add(egui::Shape::mesh(mesh));
+                p.add(egui::Shape::mesh(mesh.fill()));
                 if let Some((sc, w)) = stroke {
-                    let mut outline: Vec<Pos2> = (0..=steps).map(|i| at(a0 + (a1 - a0) * i as f32 / steps as f32, *r_outer)).collect();
-                    if *r_inner > 0.0 {
-                        outline.extend((0..=steps).rev().map(|i| at(a0 + (a1 - a0) * i as f32 / steps as f32, *r_inner)));
-                    } else {
-                        outline.push(c);
-                    }
-                    p.add(PathShape::closed_line(outline, PathStroke::new(w * z.max(0.5), rgba(*sc))));
+                    p.add(PathShape::closed_line(mesh.outline(), PathStroke::new(w * z.max(0.5), rgba(*sc))));
                 }
             }
             Prim::Circle { cx, cy, r, fill, stroke } => {

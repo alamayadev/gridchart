@@ -2537,13 +2537,9 @@ fn gridlines_are_dashed_and_muted_and_the_baseline_is_solid_and_heavier() {
     let grid_lines: Vec<&Prim> = prims.iter().filter(|p| matches!(p, Prim::Line { color, .. } if *color == grid.0)).collect();
     assert!(!grid_lines.is_empty(), "default charts must emit gridlines");
     for p in grid_lines {
-        match p {
-            Prim::Line { dash, width, .. } => {
-                assert!(*dash, "gridlines are dashed");
-                assert!((*width - grid.1).abs() < 1e-6, "gridline width is the muted token");
-            }
-            _ => unreachable!("grid line"),
-        }
+        let Prim::Line { dash, width, .. } = p else { continue };
+        assert!(*dash, "gridlines are dashed");
+        assert!((*width - grid.1).abs() < 1e-6, "gridline width is the muted token");
     }
     let base = chart_style(0).baseline;
     let baseline = prims.iter().any(|p| {
@@ -2606,7 +2602,7 @@ fn the_type_ladder_reaches_the_title_axis_titles_ticks_and_the_legend() {
     // The legend entries are the series names, and they share the tick rung (9.7 on Minimal).
     let on_tick: Vec<&str> = sizes.iter().filter(|(s, _, _)| *s == ladder.tick).map(|(_, t, _)| *t).collect();
     for name in ["North", "East", "South"] {
-        assert!(on_tick.iter().any(|t| *t == name), "the legend entry {name} sits on the tick rung: {sizes:?}");
+        assert!(on_tick.contains(&name), "the legend entry {name} sits on the tick rung: {sizes:?}");
     }
 }
 
