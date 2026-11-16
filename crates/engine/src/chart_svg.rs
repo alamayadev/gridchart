@@ -418,21 +418,8 @@ mod tests {
     #[test]
     fn a_gradient_polygon_and_wedge_reach_the_svg_defs() {
         let fill = Fill::Linear { from: [200, 10, 10, 255], to: [10, 10, 200, 255], start: [0.0, 0.0], end: [0.0, 100.0] };
-        let poly = Prim::Polygon {
-            pts: vec![[0.0, 0.0], [20.0, 0.0], [20.0, 100.0], [0.0, 100.0]],
-            fill: Some(fill),
-            stroke: None,
-        };
-        let wedge = Prim::Wedge {
-            cx: 50.0,
-            cy: 50.0,
-            r_outer: 40.0,
-            r_inner: 10.0,
-            a0: 0.0,
-            a1: 1.0,
-            fill: Some(fill),
-            stroke: None,
-        };
+        let poly = Prim::Polygon { pts: vec![[0.0, 0.0], [20.0, 0.0], [20.0, 100.0], [0.0, 100.0]], fill: Some(fill), stroke: None };
+        let wedge = Prim::Wedge { cx: 50.0, cy: 50.0, r_outer: 40.0, r_inner: 10.0, a0: 0.0, a1: 1.0, fill: Some(fill), stroke: None };
         let svg = prims_svg(&[poly, wedge], 120.0, 120.0, "");
         for part in [
             "<defs><linearGradient id=\"g0\" gradientUnits=\"userSpaceOnUse\" x1=\"0\" y1=\"0\" x2=\"0\" y2=\"100\">",

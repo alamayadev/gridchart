@@ -970,23 +970,10 @@ fn equations_print_with_the_symbol_font() {
 fn a_gradient_polygon_reaches_the_pdf_shading_behind_a_clip() {
     use gridcraft_chart::{Fill, Prim};
     let prims = vec![
-        Prim::Rect {
-            x: 0.0,
-            y: 0.0,
-            w: 200.0,
-            h: 200.0,
-            fill: Some(Fill::solid([255, 255, 255, 255])),
-            stroke: None,
-            radii: [0.0; 4],
-        },
+        Prim::Rect { x: 0.0, y: 0.0, w: 200.0, h: 200.0, fill: Some(Fill::solid([255, 255, 255, 255])), stroke: None, radii: [0.0; 4] },
         Prim::Polygon {
             pts: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 100.0], [0.0, 100.0]],
-            fill: Some(Fill::Linear {
-                from: [200, 10, 10, 255],
-                to: [10, 10, 200, 255],
-                start: [0.0, 50.0],
-                end: [100.0, 50.0],
-            }),
+            fill: Some(Fill::Linear { from: [200, 10, 10, 255], to: [10, 10, 200, 255], start: [0.0, 50.0], end: [100.0, 50.0] }),
             stroke: None,
         },
     ];
@@ -1036,8 +1023,11 @@ fn chart_budget_counts_path_points_and_drops_charts_that_do_not_fit() {
         stroke: None,
         radii: [0.0; 4],
     };
-    let hull =
-        Prim::Polygon { pts: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]], fill: Some(gridcraft_chart::Fill::solid([1, 2, 3, 255])), stroke: Some(([255, 255, 255, 255], 2.0)) };
+    let hull = Prim::Polygon {
+        pts: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+        fill: Some(gridcraft_chart::Fill::solid([1, 2, 3, 255])),
+        stroke: Some(([255, 255, 255, 255], 2.0)),
+    };
     assert_eq!(chart_cost(&[ramp, hull]), 1 + 5, "a ramp is one unit; a four-point hull is its points plus one");
     // The shared fixture costs exactly what its geometry says, and a budget of exactly that much
     // admits it: the ring and the ramp have no budget of their own.
@@ -1270,17 +1260,9 @@ fn the_fixture_reaches_the_svg_and_the_pdf_rings() {
 #[test]
 fn the_svg_and_pdf_dashes_use_the_one_dash_pattern() {
     use gridcraft_chart::GRID_DASH;
-    let prims = [gridcraft_chart::Prim::Line {
-        pts: vec![[0.0, 0.0], [100.0, 0.0]],
-        color: [0, 0, 0, 255],
-        width: 1.0,
-        dash: true,
-    }];
+    let prims = [gridcraft_chart::Prim::Line { pts: vec![[0.0, 0.0], [100.0, 0.0]], color: [0, 0, 0, 255], width: 1.0, dash: true }];
     let svg = crate::chart_svg::prims_svg(&prims, 100.0, 10.0, "d");
-    assert!(
-        svg.contains(&format!("stroke-dasharray=\"{} {}\"", GRID_DASH.0, GRID_DASH.1)),
-        "SVG uses the shared dash: {svg}"
-    );
+    assert!(svg.contains(&format!("stroke-dasharray=\"{} {}\"", GRID_DASH.0, GRID_DASH.1)), "SVG uses the shared dash: {svg}");
     let mut doc = gridcraft_pdf::PdfDoc::new();
     {
         let pg = doc.add_page(100.0, 10.0);

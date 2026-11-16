@@ -253,11 +253,7 @@ pub fn paint_prims(p: &Painter, origin: Pos2, prims: &[Prim], z: f32) {
                     Some(Fill::Linear { from, to, start, end }) => {
                         let (sa, sb) = (pt(start[0], start[1]), pt(end[0], end[1]));
                         let len_sq = (sb - sa).length_sq();
-                        if len_sq.is_finite() && len_sq > MIN_RAMP_SPAN {
-                            Some((rgba(*from), rgba(*to), sa, sb))
-                        } else {
-                            None
-                        }
+                        if len_sq.is_finite() && len_sq > MIN_RAMP_SPAN { Some((rgba(*from), rgba(*to), sa, sb)) } else { None }
                     }
                     _ => None,
                 };
@@ -1043,11 +1039,7 @@ pub(crate) mod tests {
         let to = [10u8, 10, 200, 255];
         let ramp = Fill::Linear { from, to, start: [0.0, 20.0], end: [40.0, 20.0] };
 
-        let polygon = vec![Prim::Polygon {
-            pts: vec![[0.0, 0.0], [40.0, 0.0], [40.0, 40.0], [0.0, 40.0]],
-            fill: Some(ramp),
-            stroke: None,
-        }];
+        let polygon = vec![Prim::Polygon { pts: vec![[0.0, 0.0], [40.0, 0.0], [40.0, 40.0], [0.0, 40.0]], fill: Some(ramp), stroke: None }];
         let wedge = vec![Prim::Wedge {
             cx: 20.0,
             cy: 20.0,
@@ -1065,14 +1057,13 @@ pub(crate) mod tests {
         out_poly.textures_delta.clear();
         assert!(poly_cols.contains(&rgba(from)), "convex gradient polygon keeps the near stop");
         assert!(poly_cols.contains(&rgba(to)), "convex gradient polygon keeps the far stop");
-        assert!(poly_cols.iter().any(|c| *c != rgba(from) && *c != rgba(to)) || poly_cols.iter().any(|c| *c != poly_cols[0]),
-            "convex gradient polygon is not flat: {poly_cols:?}");
+        assert!(
+            poly_cols.iter().any(|c| *c != rgba(from) && *c != rgba(to)) || poly_cols.iter().any(|c| *c != poly_cols[0]),
+            "convex gradient polygon is not flat: {poly_cols:?}"
+        );
 
-        let concave = vec![Prim::Polygon {
-            pts: vec![[0.0, 0.0], [40.0, 0.0], [20.0, 20.0], [40.0, 40.0], [0.0, 40.0]],
-            fill: Some(ramp),
-            stroke: None,
-        }];
+        let concave =
+            vec![Prim::Polygon { pts: vec![[0.0, 0.0], [40.0, 0.0], [20.0, 20.0], [40.0, 40.0], [0.0, 40.0]], fill: Some(ramp), stroke: None }];
         let mut out_concave = ctx.run_ui(Default::default(), |ui| paint_prims(ui.painter(), pos2(0.0, 0.0), &concave, 1.0));
         let concave_meshes = out_concave.shapes.iter().filter(|cs| matches!(cs.shape, egui::Shape::Mesh(_))).count();
         let concave_cols = mesh_colours(&out_concave);

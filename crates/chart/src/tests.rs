@@ -1873,7 +1873,6 @@ fn pie_points_follow_the_chart_preset() {
     assert_eq!(legend2, legend, "the workbook theme must not change chart colours");
 }
 
-
 /// A 200-category pie whose labels cannot fit inside: every one of them steps outside with a
 /// three-point leader, the leaders never outnumber `MAX_LABELS`, and none of it moves a slice.
 #[test]
@@ -1905,9 +1904,7 @@ fn pie_leaders_are_bounded_and_never_move_a_slice() {
     // MAX_WEDGES + 3 * MAX_LABELS + 64: wedges, leaders, labels and the card, with headroom.
     assert!(p_on.len() < 2048 + 3 * 200 + 64, "{} prims stays inside the budget", p_on.len());
     // Labels and leaders never perturb a slice angle or fill: the wedge lists are identical.
-    let wedges = |p: &Vec<Prim>| -> Vec<Prim> {
-        p.iter().filter(|q| matches!(q, Prim::Wedge { .. })).cloned().collect()
-    };
+    let wedges = |p: &Vec<Prim>| -> Vec<Prim> { p.iter().filter(|q| matches!(q, Prim::Wedge { .. })).cloned().collect() };
     assert_eq!(wedges(&p_on), wedges(&p_off), "the wedge list is identical with labels on and off");
 }
 
@@ -2537,10 +2534,7 @@ fn the_producer_gives_a_bar_rounded_outward_tips() {
 fn gridlines_are_dashed_and_muted_and_the_baseline_is_solid_and_heavier() {
     let prims = render(&chart(ChartKind::ColumnClustered), &sample(ChartKind::ColumnClustered), 640.0, 400.0, &ApproxMeasure);
     let grid = chart_style(0).grid;
-    let grid_lines: Vec<&Prim> = prims
-        .iter()
-        .filter(|p| matches!(p, Prim::Line { color, .. } if *color == grid.0))
-        .collect();
+    let grid_lines: Vec<&Prim> = prims.iter().filter(|p| matches!(p, Prim::Line { color, .. } if *color == grid.0)).collect();
     assert!(!grid_lines.is_empty(), "default charts must emit gridlines");
     for p in grid_lines {
         match p {
@@ -2566,10 +2560,7 @@ fn the_baseline_is_drawn_even_with_gridlines_off() {
     c.gridlines = false;
     let prims = render(&c, &sample(ChartKind::ColumnClustered), 640.0, 400.0, &ApproxMeasure);
     let grid = chart_style(0).grid.0;
-    assert!(
-        !prims.iter().any(|p| matches!(p, Prim::Line { color, .. } if *color == grid)),
-        "gridlines off must hide gridlines"
-    );
+    assert!(!prims.iter().any(|p| matches!(p, Prim::Line { color, .. } if *color == grid)), "gridlines off must hide gridlines");
     let base = chart_style(0).baseline;
     assert!(
         prims.iter().any(|p| matches!(p, Prim::Line { color, width, dash, pts, .. }
@@ -2583,10 +2574,7 @@ fn the_baseline_is_drawn_even_with_gridlines_off() {
 fn radar_gridlines_are_dashed_too() {
     let prims = render(&chart(ChartKind::Radar), &sample(ChartKind::Radar), 640.0, 400.0, &ApproxMeasure);
     let grid = chart_style(0).grid.0;
-    let grid_lines: Vec<&Prim> = prims
-        .iter()
-        .filter(|p| matches!(p, Prim::Line { color, .. } if *color == grid))
-        .collect();
+    let grid_lines: Vec<&Prim> = prims.iter().filter(|p| matches!(p, Prim::Line { color, .. } if *color == grid)).collect();
     assert!(!grid_lines.is_empty(), "a radar chart draws grid rings/spokes");
     for p in grid_lines {
         assert!(matches!(p, Prim::Line { dash: true, .. }), "radar gridlines are dashed");
@@ -2611,15 +2599,14 @@ fn the_type_ladder_reaches_the_title_axis_titles_ticks_and_the_legend() {
     assert!(title.is_some(), "the title sits on the ladder's top rung: {sizes:?}");
     let axis = sizes.iter().filter(|(s, t, _)| *s == ladder.axis_title && (t.contains("Quarter") || t.contains("Revenue")));
     assert_eq!(axis.count(), 2, "both axis titles sit on the middle rung: {sizes:?}");
-    let ticks = sizes.iter().any(|(s, t, _)| *s == ladder.tick && t.trim().len() <= 4 && !t.contains("Sales") && !t.contains("Quarter") && !t.contains("Revenue"));
+    let ticks = sizes
+        .iter()
+        .any(|(s, t, _)| *s == ladder.tick && t.trim().len() <= 4 && !t.contains("Sales") && !t.contains("Quarter") && !t.contains("Revenue"));
     assert!(ticks, "the tick labels sit on the bottom rung: {sizes:?}");
     // The legend entries are the series names, and they share the tick rung (9.7 on Minimal).
     let on_tick: Vec<&str> = sizes.iter().filter(|(s, _, _)| *s == ladder.tick).map(|(_, t, _)| *t).collect();
     for name in ["North", "East", "South"] {
-        assert!(
-            on_tick.iter().any(|t| *t == name),
-            "the legend entry {name} sits on the tick rung: {sizes:?}"
-        );
+        assert!(on_tick.iter().any(|t| *t == name), "the legend entry {name} sits on the tick rung: {sizes:?}");
     }
 }
 

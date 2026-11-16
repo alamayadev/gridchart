@@ -194,11 +194,7 @@ pub(super) fn draw_prims(pg: &mut Page, prims: &[gridcraft_chart::Prim], xf: Xf)
                         }
                     }
                     Some(Fill::Solid(c)) => {
-                        pg.polygon(
-                            &xpts,
-                            Some(blend_over(*c, bg)),
-                            stroke.map(|(c, w)| (blend_over(c, bg), (w * k).max(0.1))),
-                        );
+                        pg.polygon(&xpts, Some(blend_over(*c, bg)), stroke.map(|(c, w)| (blend_over(c, bg), (w * k).max(0.1))));
                     }
                     None => {
                         pg.polygon(&xpts, None, stroke.map(|(c, w)| (blend_over(c, bg), (w * k).max(0.1))));
@@ -235,11 +231,7 @@ pub(super) fn draw_prims(pg: &mut Page, prims: &[gridcraft_chart::Prim], xf: Xf)
                         }
                     }
                     Some(Fill::Solid(c)) => {
-                        pg.polygon(
-                            &xpts,
-                            Some(blend_over(*c, bg)),
-                            stroke.map(|(c, w)| (blend_over(c, bg), (w * k).max(0.1))),
-                        );
+                        pg.polygon(&xpts, Some(blend_over(*c, bg)), stroke.map(|(c, w)| (blend_over(c, bg), (w * k).max(0.1))));
                     }
                     None => {
                         pg.polygon(&xpts, None, stroke.map(|(c, w)| (blend_over(c, bg), (w * k).max(0.1))));

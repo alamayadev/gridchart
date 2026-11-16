@@ -2,8 +2,8 @@ use super::frame::Bx;
 use super::shape::{self, MarkerGeometry, MarkerShape, marker_shape};
 use super::trend::supports_trendline;
 use super::{
-    Chart, ChartData, ChartKind, Ctx, DOWN, HAlign, MAX_CATS, MAX_SERIES, MAX_TRENDLINES, Prim, Rgba, SeriesData, UP, VAlign, auto_name,
-    chart_style, ramp_color,
+    Chart, ChartData, ChartKind, Ctx, DOWN, HAlign, MAX_CATS, MAX_SERIES, MAX_TRENDLINES, Prim, Rgba, SeriesData, UP, VAlign, auto_name, chart_style,
+    ramp_color,
 };
 use gridcraft_model::LegendPos;
 

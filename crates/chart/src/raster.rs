@@ -435,14 +435,8 @@ mod tests {
         assert!(paths.len() >= 2, "a 100 pt segment produces several dashes");
         let first_end = paths[0][0][1][0];
         let second_start = paths[1][0][0][0];
-        assert!(
-            (first_end - crate::GRID_DASH.0).abs() < 1e-4,
-            "first dash is {first_end}"
-        );
-        assert!(
-            (second_start - (crate::GRID_DASH.0 + crate::GRID_DASH.1)).abs() < 1e-4,
-            "gap ends at {second_start}"
-        );
+        assert!((first_end - crate::GRID_DASH.0).abs() < 1e-4, "first dash is {first_end}");
+        assert!((second_start - (crate::GRID_DASH.0 + crate::GRID_DASH.1)).abs() < 1e-4, "gap ends at {second_start}");
     }
 
     /// D-01: a ramp is exactly its stop colours at both ends. The stops sit on the sample centres
