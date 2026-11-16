@@ -1,6 +1,6 @@
 # Gaps
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-11-02 · **Change:** minor (§17: equations; earlier: §13: Solver Sensitivity report; earlier: §4: chart resizing is no longer a gap; earlier: §13: Analysis ToolPak has all 19 tools; earlier: §4: chart data tables implemented with XLSX round-trip and print/PDF; earlier: §13: Solver Options; earlier: §13: Solver Load/Save Model and Reset All) · **Target:** Microsoft Excel (Microsoft 365)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-11-16 · **Change:** minor (§4: chart gridline and typography polish retired — six chart style families set the card, dashed muted gridlines, a solid heavier baseline and a type ladder that reach all four backends; earlier: §17: equations; earlier: §13: Solver Sensitivity report; earlier: §4: chart resizing is no longer a gap; earlier: §13: Analysis ToolPak has all 19 tools; earlier: §4: chart data tables implemented with XLSX round-trip and print/PDF; earlier: §13: Solver Options; earlier: §13: Solver Load/Save Model and Reset All) · **Target:** Microsoft Excel (Microsoft 365)
 
 Every known shortfall against Excel, one entry each, ranked by user impact (what blocks someone
 using GridCraft for real work first). This is the work list: pick from the top, check the open
@@ -45,6 +45,10 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
 ### 4. Charts lose options on round trip; shallow chart model (F, FF)
 - **Missing:** axis scaling, label options, error bars, per-point formatting.
 - **Added:** data tables beneath column, bar, line, area and compatible combo charts, with legend keys, border controls, live source values, native XLSX round-trip and print/PDF.
+- **Retired:** chart gridline and typography polish is no longer a gap: six style families set the card
+  surface, muted dashed gridlines, a solid heavier baseline and a type ladder for the title, axis
+  titles, ticks and legend, and all of it reaches the UI, SVG, PNG and print/PDF through the same
+  primitives (`crates/chart/src/resolve/style.rs`, `crates/chart/src/render/frame.rs`).
 - **Evidence:** `Chart` holds only title, legend position, two flags and axis titles
   (`crates/model/src/features.rs`); all 2-D kinds survive XLSX round trip (#158, #161); charts
   resize from eight handles (#190). Smooth lines (#62), Switch Row/Column (#116) and trendlines
@@ -193,6 +197,7 @@ No alpha blockers: every core workflow passes the [alpha gate](roadmap.md#alpha-
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-16 | minor | §4: chart gridline and typography polish retired. Six chart style families set the card surface, muted dashed gridlines, a solid heavier baseline and a type ladder for the title, axis titles, ticks and legend; one dash pattern serves the UI, SVG, PNG and print/PDF. Axis options, label options, error bars and per-point formatting remain the chart gaps |
 | 2026-11-02 | minor | §17: equations (Insert › Equation, LaTeX source, gallery, editor) |
 | 2026-11-02 | minor | §13: Solver Sensitivity report: shadow prices, reduced costs and allowable ranges for Simplex LP; Lagrange multipliers and reduced gradients for GRG Nonlinear |
 | 2026-11-02 | minor | §4: charts, like every floating object, move and resize from eight handles (#190), so resizing is no longer listed as missing; the evidence is one paragraph again, without the stale "PRs #158, #161 open" |

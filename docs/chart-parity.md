@@ -1,6 +1,6 @@
 # Chart parity
 
-> **Last reviewed:** 2026-10-18 · **Last updated:** 2026-11-07 · **Change:** minor (chart-data-table keys pass the series index to the shared combo plot-kind rule, restoring compilation after #1150; earlier: doughnut charts: every series is a concentric ring, the first series innermost; hole size and first slice angle kept; rotated slices cover their own sweep; legend names categories; earlier: charts resize from eight handles, chart data tables, legend keys and borders, native XLSX round-trip and print/PDF; earlier: selected chart source outlines stay beneath floating objects) · **Target:** Microsoft Excel (Microsoft 365), Excel for Mac 16.113.4
+> **Last reviewed:** 2026-10-18 · **Last updated:** 2026-11-16 · **Change:** minor (chart frame tokens: gridlines are muted dashed lines and the baseline is a solid heavier line, one dash pattern in all four backends; a six-family type ladder sets the title, both axis titles, the tick labels and the legend; earlier: chart-data-table keys pass the series index to the shared combo plot-kind rule, restoring compilation after #1150; earlier: doughnut charts: every series is a concentric ring, the first series innermost; hole size and first slice angle kept; rotated slices cover their own sweep; legend names categories; earlier: charts resize from eight handles, chart data tables, legend keys and borders, native XLSX round-trip and print/PDF; earlier: selected chart source outlines stay beneath floating objects) · **Target:** Microsoft Excel (Microsoft 365), Excel for Mac 16.113.4
 
 Excel's chart types and chart elements against GridCraft. Part of
 [target-app-parity.md](target-app-parity.md). **Breadth ~50%, ready ~30%, 40–60 h** (estimated).
@@ -41,10 +41,10 @@ Sources: `crates/model/src/features.rs` (`ChartKind`, `Chart`, `Series`), `crate
 |---|---|---|
 | Move and resize the chart object | yes | yes (eight handles, each moving only its own edges; Format Chart Area Size fields) (#190) |
 | Selected chart source-data outline | visible on uncovered cells, beneath floating objects | painted above cells and below charts, shapes, pictures and slicers; retains pane clipping and right-to-left cell geometry (#2861) |
-| Chart title, axis titles | text, linked to cells, full formatting | text only |
-| Legend | position, overlay, formatting, per-entry delete | position only |
+| Chart title, axis titles | text, linked to cells, full formatting | text only; sizes come from the chart style's type ladder (`ChartStyle::type_scale`: title, axis title, tick), and a short chart shrinks its title to 12% of the height |
+| Legend | position, overlay, formatting, per-entry delete | position only; legend text shares the style's tick rung |
 | Data labels | value, category, series, percentage, from cells, callouts, position | one on/off flag |
-| Gridlines | major/minor per axis, formatting | one on/off flag |
+| Gridlines | major/minor per axis, formatting | one on/off flag; muted dashed lines from the style's `grid` token, sharing one 3 × 2 pt dash pattern across egui, SVG, raster and PDF. A solid, heavier baseline line from the `baseline` token is drawn even with gridlines off |
 | Axis options | min/max/units, log scale, reverse order, crossing point, display units, date axis, number format | **missing** (auto only) |
 | Multi-level category axis (a category range two or more columns wide beside the values: year beside month) | the outer levels grouped under the labels with separators | read (`multiLvlStrRef`), drawn (rows under the labels; columns beside them in bar charts; up to three outer levels), written back with Excel's level caches |
 | Doughnut hole size, first slice angle | 10–90% hole (Excel default 75%), 0–359° first slice | Format Chart pane sliders; read from and written to `c:holeSize` / `c:firstSliceAng`; documents saved before the setting existed keep their old 50% hole |
@@ -54,7 +54,7 @@ Sources: `crates/model/src/features.rs` (`ChartKind`, `Chart`, `Series`), `crate
 | Up/down bars, high-low lines, drop lines, series lines | yes | **missing** |
 | Data table under the chart | yes | yes for column, bar, line, area and compatible combo charts: live formatted values, blank cells, grouped category headers, optional legend keys, horizontal/vertical borders and outline; native `c:dTable` XLSX round-trip; shared UI/print/PDF rendering |
 | Per-series / per-point fill, line, marker, effects | Format pane for every element | series colour only; Format Chart pane covers chart-level options |
-| Chart styles and colour palettes | ~16 styles × colour sets | style number stored, own palettes |
+| Chart styles and colour palettes | ~16 styles × colour sets | style number stored (ids 0–48); own palettes in six style families (default, vibrant, minimal, dark, pastel, tinted), each with its own card surface, card border, text, grid, baseline, marker ring, slice seam and type ladder. A chart paints its own card, so a dark preset stays dark in the UI, SVG, PNG and PDF |
 | Chart sheets | yes | **kept, not editable**: not shown, and written back unchanged in their place on save (#727); left out when a sheet they plot is deleted or renamed. No F11 / Move Chart > New sheet |
 | Chart templates (`.crtx`) | yes | **missing** |
 | Recommended Charts | yes | dialog with recommendations from the data's shape (own heuristic) and an All Charts list, live previews (#215) |
@@ -78,6 +78,15 @@ font/fill styling and exact Excel layout fidelity are not implemented; Excel-sid
 has not been performed.
 
 Format reference: [Microsoft's DrawingML data table documentation](https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.drawing.charts.datatable?view=openxml-3.0.1).
+
+The chart frame reads its colours and sizes from the chart style, not from literals: gridlines are
+dashed with the style's `grid` colour and width, the baseline (and a numeric category axis's zero
+line) is a solid, heavier `baseline` line, and the title, both axis titles, the tick labels and the
+legend text step down the style's `type_scale`. `GRID_DASH` (3 pt on, 2 pt off, in
+`crates/chart/src/lib.rs`) is the one dash period: the rasterizer, the SVG `stroke-dasharray`, the
+PDF dash array (scaled by the print transform) and the egui dashed line all use it. All of this
+travels as ordinary `Prim::Line`/`Prim::Text` primitives, so the four backends need no separate
+styling code.
 
 ## XLSX round-trip
 
@@ -107,6 +116,7 @@ are (#1686). Such series get no `numCache`/`strCache` on save (#1690).
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-16 | minor | Chart frame tokens: gridlines draw muted and dashed from the style's `grid` token while the baseline (and a numeric category axis's zero line) is solid and heavier from the `baseline` token, drawn even with gridlines off; radar rings and spokes are dashed too. One `GRID_DASH` period serves raster, SVG, PDF and egui. The type ladder (`type_scale`) now reaches the title, both axis titles, the tick labels and the legend. No readiness score change. |
 | 2026-11-07 | minor | Chart-data-table keys use the shared plot-kind helper with their series index after #1150. A focused regression checks the first combo series uses a column key and later series use line keys. No readiness score change. |
 | 2026-11-02 | minor | Charts move and resize from eight handles, each moving only its own edges (#190); resizing leaves the work list (1–2 h, within the 40–60 h rounding) |
 | 2026-11-01 | minor | Chart data tables for column, bar, line, area and compatible combo charts: command/UI controls, formatted source values, blanks, grouped category headers, legend keys, independent borders, shared print/PDF rendering and native c:dTable import/export. Dense tables show a space notice; no readiness score change. |
