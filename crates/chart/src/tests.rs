@@ -2593,6 +2593,60 @@ fn radar_gridlines_are_dashed_too() {
     }
 }
 
+#[test]
+fn the_type_ladder_reaches_the_title_axis_titles_ticks_and_the_legend() {
+    // Minimal (style 3) scales the whole ladder together: rungs(1080) = 15.1/10.8/9.7.
+    let mut c = chart(ChartKind::ColumnClustered);
+    c.style = 3;
+    let ladder = chart_style(3).type_scale;
+    let prims = render(&c, &sample(ChartKind::ColumnClustered), 640.0, 400.0, &ApproxMeasure);
+    let sizes: Vec<(f32, &str, bool)> = prims
+        .iter()
+        .filter_map(|p| match p {
+            Prim::Text { text, size, bold, .. } => Some((*size, text.as_str(), *bold)),
+            _ => None,
+        })
+        .collect();
+    let title = sizes.iter().find(|(s, t, _)| *s == ladder.title && t.contains("Quarterly Sales"));
+    assert!(title.is_some(), "the title sits on the ladder's top rung: {sizes:?}");
+    let axis = sizes.iter().filter(|(s, t, _)| *s == ladder.axis_title && (t.contains("Quarter") || t.contains("Revenue")));
+    assert_eq!(axis.count(), 2, "both axis titles sit on the middle rung: {sizes:?}");
+    let ticks = sizes.iter().any(|(s, t, _)| *s == ladder.tick && t.trim().len() <= 4 && !t.contains("Sales") && !t.contains("Quarter") && !t.contains("Revenue"));
+    assert!(ticks, "the tick labels sit on the bottom rung: {sizes:?}");
+    // The legend entries are the series names, and they share the tick rung (9.7 on Minimal).
+    let on_tick: Vec<&str> = sizes.iter().filter(|(s, _, _)| *s == ladder.tick).map(|(_, t, _)| *t).collect();
+    for name in ["North", "East", "South"] {
+        assert!(
+            on_tick.iter().any(|t| *t == name),
+            "the legend entry {name} sits on the tick rung: {sizes:?}"
+        );
+    }
+}
+
+#[test]
+fn a_short_chart_still_shrinks_its_title() {
+    // At 320x100 the shrink rule caps the Minimal title (15.1) at 12% of the height: 12.0.
+    let mut c = chart(ChartKind::ColumnClustered);
+    c.style = 3;
+    let prims = render(&c, &sample(ChartKind::ColumnClustered), 320.0, 100.0, &ApproxMeasure);
+    let title = prims
+        .iter()
+        .filter_map(|p| match p {
+            Prim::Text { text, size, .. } if text.contains("Quarterly Sales") => Some(*size),
+            _ => None,
+        })
+        .collect::<Vec<f32>>();
+    assert_eq!(title, vec![12.0], "the title shrinks to h*0.12, never above the rung");
+    let max = prims
+        .iter()
+        .filter_map(|p| match p {
+            Prim::Text { size, .. } => Some(*size),
+            _ => None,
+        })
+        .fold(0.0_f32, f32::max);
+    assert!((max - 12.0).abs() < 1e-6, "nothing outsizes the shrunken title: {max}");
+}
+
 // ---------------------------------------------------------------- sanitizer: ramps and radii (02-01-02)
 
 /// A rect at the box origin with the given paint and radii, for the finalize pass.
