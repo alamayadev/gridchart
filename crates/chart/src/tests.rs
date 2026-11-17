@@ -2223,11 +2223,11 @@ fn radar_labels_and_grid_follow_preset_tokens() {
         // Rings and spokes are the preset's dashed grid strokes.
         let mut grid_lines = 0;
         for q in &p {
-            if let Prim::Line { color, dash, .. } = q {
-                if *color == tokens.grid.0 {
-                    assert!(*dash, "style {style}: radar rings and spokes are dashed grid strokes");
-                    grid_lines += 1;
-                }
+            if let Prim::Line { color, dash, .. } = q
+                && *color == tokens.grid.0
+            {
+                assert!(*dash, "style {style}: radar rings and spokes are dashed grid strokes");
+                grid_lines += 1;
             }
         }
         assert!(grid_lines >= 7, "style {style}: rings plus spokes drawn ({grid_lines})");
@@ -2248,6 +2248,7 @@ fn radar_labels_and_grid_follow_preset_tokens() {
     assert!(sizes3.iter().all(|s| (*s - 9.7).abs() < 1e-6), "style 3: every label on the 9.7 rung {sizes3:?}");
     // Geometry is preset-proof: no preset may move a ring, a spoke, a series point or a label
     // anchor — only the ink and the type rung change.
+    #[allow(clippy::type_complexity)]
     let geometry = |style: u32| -> (Vec<(Vec<[f32; 2]>, bool)>, Vec<(f32, f32, String)>) {
         let p = scene(style);
         let lines = p
@@ -2268,6 +2269,152 @@ fn radar_labels_and_grid_follow_preset_tokens() {
     };
     assert_eq!(geometry(0), geometry(3), "the preset must not move a ring, spoke, series point or label anchor");
     assert_eq!(geometry(0), geometry(4), "the preset must not move a ring, spoke, series point or label anchor");
+}
+
+/// Phase 4 (04-02): the partition specialties (treemap, sunburst) follow the preset without
+/// touching their geometry. Tile and wedge seams are `slice_seam`, a label inside a tile or a
+/// wedge is the contrast ink `on(fill)` on the tile or wedge it sits in — so the dark preset
+/// stays readable — and no preset may move a tile, a wedge, a hole edge or a label anchor.
+#[test]
+fn partition_specialties_keep_contrast_and_geometry_across_presets() {
+    let cats: Vec<String> = ["Q1", "Q2", "Q3", "Q4", "Q5", "Q6"].iter().map(|s| s.to_string()).collect();
+    let data = |style: u32| {
+        let preset = chart_style_preset(style);
+        ChartData {
+            category_levels: vec![],
+            palette: preset.to_vec(),
+            categories: cats.clone(),
+            // A second, empty series keeps the auto title (series-name fallback) off the scene;
+            // both kinds read only `series.first()`.
+            series: vec![
+                series("North", &[12000., -4000., 23000., 31000., 18000., 27000.], preset[0], ChartKind::Treemap),
+                series("South", &[], preset[0], ChartKind::Treemap),
+            ],
+        }
+    };
+    let on = |fill: Rgba| -> Rgba {
+        let luma = 0.299 * f32::from(fill[0]) + 0.587 * f32::from(fill[1]) + 0.114 * f32::from(fill[2]);
+        if luma < 150.0 { [0xFF, 0xFF, 0xFF, 0xFF] } else { [0x26, 0x26, 0x26, 0xFF] }
+    };
+    let luma = |c: Rgba| 0.299 * f32::from(c[0]) + 0.587 * f32::from(c[1]) + 0.114 * f32::from(c[2]);
+    let scene = |kind: ChartKind, style: u32| {
+        let mut c = chart(kind);
+        c.style = style;
+        c.title = None;
+        c.legend = LegendPos::None;
+        render(&c, &data(style), 640.0, 400.0, &ApproxMeasure)
+    };
+    let solid = |f: &Option<Fill>| f.as_ref().map(Fill::start);
+
+    // Treemap: five tiles (the negative value drops), seam-stroked, palette-filled, and every
+    // label drawn inside a tile carries the contrast ink on that tile's fill.
+    let tiles = |p: &[Prim], seam: (Rgba, f32)| -> Vec<(Rgba, [f32; 4])> {
+        p.iter()
+            .filter_map(|q| match q {
+                Prim::Rect { x, y, w, h, fill, stroke: Some(s), .. } if *s == seam => Some((solid(fill)?, [*x, *y, *w, *h])),
+                _ => None,
+            })
+            .collect()
+    };
+    for style in [0u32, 4] {
+        let tokens = chart_style(style);
+        let preset = chart_style_preset(style);
+        let p = scene(ChartKind::Treemap, style);
+        let ts = tiles(&p, tokens.slice_seam);
+        assert_eq!(ts.len(), 5, "style {style}: five treemap tiles for five positive values");
+        assert!(ts.iter().all(|(f, _)| preset.contains(f)), "style {style}: tiles take the preset palette");
+        let mut labeled = 0;
+        for q in &p {
+            let Prim::Text { x, y, color, .. } = q else { continue };
+            if let Some((fill, _)) = ts.iter().find(|(_, [bx, by, bw, bh])| *x >= *bx && *x <= bx + bw && *y >= *by && *y <= by + bh) {
+                labeled += 1;
+                assert_eq!(*color, on(*fill), "style {style}: a treemap label must be the contrast ink on its tile");
+                assert!((luma(*color) - luma(*fill)).abs() >= 80.0, "style {style}: unreadable treemap label ink {color:?} on {fill:?}");
+            }
+        }
+        assert!(labeled >= 1, "style {style}: treemap labels drawn");
+    }
+    #[allow(clippy::type_complexity)]
+    let treemap_geometry = |style: u32| -> (Vec<[f32; 4]>, Vec<(f32, f32, String)>) {
+        let p = scene(ChartKind::Treemap, style);
+        let rects = tiles(&p, chart_style(style).slice_seam).into_iter().map(|t| t.1).collect();
+        let texts = p
+            .iter()
+            .filter_map(|q| match q {
+                Prim::Text { x, y, text, .. } => Some((*x, *y, text.clone())),
+                _ => None,
+            })
+            .collect();
+        (rects, texts)
+    };
+    assert_eq!(treemap_geometry(0), treemap_geometry(4), "the preset must not move a treemap tile or label");
+
+    // Sunburst: six wedges around a fixed hole, seam-stroked, palette-filled, and every label
+    // sits at the mid-angle of its wedge carrying the contrast ink on that wedge's fill.
+    #[allow(clippy::type_complexity)]
+    let wedges = |p: &[Prim]| -> Vec<(Rgba, [f32; 2], f32, f32, f32, f32, f32)> {
+        p.iter()
+            .filter_map(|q| match q {
+                Prim::Wedge { cx, cy, r_outer, r_inner, a0, a1, fill, .. } => Some((solid(fill)?, [*cx, *cy], *r_outer, *r_inner, *a0, *a1, (*a0 + *a1) / 2.0)),
+                _ => None,
+            })
+            .collect()
+    };
+    for style in [0u32, 4] {
+        let tokens = chart_style(style);
+        let preset = chart_style_preset(style);
+        let p = scene(ChartKind::Sunburst, style);
+        let ws = wedges(&p);
+        assert_eq!(ws.len(), 6, "style {style}: six sunburst wedges");
+        assert!(ws.iter().all(|w| preset.contains(&w.0)), "style {style}: wedges take the preset palette");
+        assert!(
+            ws.iter().all(|w| (w.3 / w.2 - 0.2).abs() < 1e-3),
+            "style {style}: the sunburst hole keeps its measured 20% size"
+        );
+        for q in p.iter().filter(|q| matches!(q, Prim::Wedge { .. })) {
+            if let Prim::Wedge { stroke, .. } = q {
+                assert_eq!(*stroke, Some(tokens.slice_seam), "style {style}: wedge seams are the preset slice seam");
+            }
+        }
+        // A label belongs to the wedge whose mid-angle it sits on.
+        let norm = |a: f32| a.rem_euclid(std::f32::consts::TAU);
+        let mut labeled = 0;
+        for q in &p {
+            let Prim::Text { x, y, color, .. } = q else { continue };
+            let (dx, dy) = (*x - ws[0].1[0], *y - ws[0].1[1]);
+            let theta = norm(dy.atan2(-dx));
+            let own = ws
+                .iter()
+                .min_by(|a, b| {
+                    let (da, db) = ((norm(a.6) - theta).abs(), (norm(b.6) - theta).abs());
+                    da.total_cmp(&db)
+                })
+                .unwrap_or(&ws[0]);
+            let rad = (dx * dx + dy * dy).sqrt();
+            assert!(rad > own.3 - 0.5 && rad < own.2 + 0.5, "style {style}: a sunburst label must sit inside the ring");
+            assert_eq!(*color, on(own.0), "style {style}: a sunburst label must be the contrast ink on its wedge");
+            assert!((luma(*color) - luma(own.0)).abs() >= 80.0, "style {style}: unreadable sunburst label ink {color:?} on {own:?}");
+            labeled += 1;
+        }
+        assert!(labeled >= 1, "style {style}: sunburst labels drawn");
+    }
+    #[allow(clippy::type_complexity)]
+    let sun_geometry = |style: u32| -> (Vec<([f32; 2], f32, f32, f32, f32)>, Vec<(f32, f32, String)>) {
+        let p = scene(ChartKind::Sunburst, style);
+        let ws = wedges(&p).into_iter().map(|w| (w.1, w.2, w.3, w.4, w.5)).collect();
+        let texts = p
+            .iter()
+            .filter_map(|q| match q {
+                Prim::Text { x, y, text, .. } => Some((*x, *y, text.clone())),
+                _ => None,
+            })
+            .collect();
+        (ws, texts)
+    };
+    assert_eq!(sun_geometry(0), sun_geometry(4), "the preset must not move a wedge, a hole edge or a label");
+    // The presets still reach both scenes.
+    assert_ne!(scene(ChartKind::Treemap, 0), scene(ChartKind::Treemap, 4), "the dark preset must change the treemap scene");
+    assert_ne!(scene(ChartKind::Sunburst, 0), scene(ChartKind::Sunburst, 4), "the dark preset must change the sunburst scene");
 }
 
 #[test]
