@@ -69,6 +69,10 @@ fn mirror_shape(shape: &mut egui::Shape, axis: f32) {
     }
 }
 
+/// Sub-pixel slack when deciding a wrapped line fits the cell: font metric rounding can miss a
+/// default-height row by a few hundredths of a point, and hiding a line over that is wrong.
+const WRAP_FIT_EPS: f32 = 0.25;
+
 /// Restrict top-aligned wrapped text to complete lines inside the cell.
 ///
 /// Preserve the cell and viewport clip when every line fits. Otherwise,
@@ -83,11 +87,11 @@ fn wrapped_text_clip(p: &Painter, rect: Rect, galley: &egui::Galley, y: f32, val
         return clip;
     };
 
-    if y + last_row.rect().bottom() <= rect.bottom() + 0.01 {
+    if y + last_row.rect().bottom() <= rect.bottom() + WRAP_FIT_EPS {
         return clip;
     }
 
-    let last_full_bottom = galley.rows.iter().map(|row| y + row.rect().bottom()).rfind(|bottom| *bottom <= rect.bottom() + 0.01);
+    let last_full_bottom = galley.rows.iter().map(|row| y + row.rect().bottom()).rfind(|bottom| *bottom <= rect.bottom() + WRAP_FIT_EPS);
 
     clip.max.y = last_full_bottom.map(|bottom| clip.bottom().min(bottom)).unwrap_or(clip.top()).max(clip.top());
 
