@@ -2111,6 +2111,165 @@ fn funnel_stage_widths_and_order_keep_semantics_across_presets() {
     assert_eq!(s0, s4, "the preset must not move a stage");
 }
 
+/// Phase 4 (04-02): the box & whisker median bar and mean-cross legs sit on the series fill, so
+/// their ink is the contrast helper `on(fill)`, never a hardcoded white. A light series fill
+/// proves the contrast awareness — there the readable ink is dark — and no preset may move a
+/// mark or the box it is read against.
+#[test]
+fn box_whisker_marks_use_contrast_aware_ink_across_presets() {
+    let dark_fill: Rgba = [20, 96, 130, 255];
+    let light_fill: Rgba = [235, 235, 220, 255];
+    let d = ChartData {
+        category_levels: vec![],
+        palette: vec![],
+        categories: vec![],
+        series: vec![
+            series("A", &[1., 2., 3., 4., 5., 6.], dark_fill, ChartKind::BoxWhisker),
+            series("B", &[1., 2., 3., 4., 5., 6.], light_fill, ChartKind::BoxWhisker),
+        ],
+    };
+    // `frame::on`, mirrored: the readable ink on a fill depends on the fill alone, so it is the
+    // same on every preset.
+    let on = |fill: Rgba| -> Rgba {
+        let luma = 0.299 * f32::from(fill[0]) + 0.587 * f32::from(fill[1]) + 0.114 * f32::from(fill[2]);
+        if luma < 150.0 { [0xFF, 0xFF, 0xFF, 0xFF] } else { [0x26, 0x26, 0x26, 0xFF] }
+    };
+    let luma = |c: Rgba| 0.299 * f32::from(c[0]) + 0.587 * f32::from(c[1]) + 0.114 * f32::from(c[2]);
+    let scene = |style: u32| {
+        let mut c = chart(ChartKind::BoxWhisker);
+        c.style = style;
+        c.legend = LegendPos::None;
+        render(&c, &d, 640.0, 400.0, &ApproxMeasure)
+    };
+    // The IQR box of one series, its mark inks (median bar + two mean-cross legs) and the y
+    // anchors of the median and the mean.
+    let marks = |p: &[Prim], fill: Rgba| -> Option<(Vec<Rgba>, f32, f32, f32, f32)> {
+        let (bx, by, bw, bh) = p.iter().find_map(|q| match q {
+            Prim::Rect { x, y, w, h, fill: Some(Fill::Solid(c)), stroke: None, .. } if *c == fill => Some((*x, *y, *w, *h)),
+            _ => None,
+        })?;
+        let (mut ink, mut median, mut mean) = (Vec::new(), f32::NAN, f32::NAN);
+        for q in p {
+            if let Prim::Line { color, dash: false, pts, .. } = q
+                && *color != fill
+                && pts.iter().all(|t| t[0] >= bx - 1.0 && t[0] <= bx + bw + 1.0)
+            {
+                ink.push(*color);
+                if pts[0][1] == pts[1][1] {
+                    median = pts[0][1];
+                } else {
+                    mean = (pts[0][1] + pts[1][1]) / 2.0;
+                }
+            }
+        }
+        Some((ink, median, mean, by, by + bh))
+    };
+    for style in [0u32, 4] {
+        let p = scene(style);
+        for fill in [dark_fill, light_fill] {
+            let (ink, median, mean, top, bottom) =
+                marks(&p, fill).unwrap_or_else(|| panic!("style {style}: the box for fill {fill:?} is not drawn"));
+            assert_eq!(ink.len(), 3, "style {style} fill {fill:?}: one median bar and two mean-cross legs");
+            for c in &ink {
+                assert_eq!(*c, on(fill), "style {style} fill {fill:?}: mark ink must be the contrast ink on the fill");
+                assert!((luma(*c) - luma(fill)).abs() >= 80.0, "style {style} fill {fill:?}: unreadable mark ink {c:?}");
+            }
+            // The marks stay inside the IQR box they annotate (y grows down: q3 top, q1 bottom).
+            assert!(top < median && median < bottom, "style {style} fill {fill:?}: median {median} outside the box [{top}, {bottom}]");
+            assert!(top < mean && mean < bottom, "style {style} fill {fill:?}: mean {mean} outside the box [{top}, {bottom}]");
+        }
+    }
+    // Contrast ink depends on the fill alone: the marks and the box are the same on the dark
+    // preset, while the preset still reaches the scene through its tokens.
+    assert_eq!(marks(&scene(0), light_fill), marks(&scene(4), light_fill), "the preset must not move a mark or its box");
+    assert_eq!(marks(&scene(0), dark_fill), marks(&scene(4), dark_fill), "the preset must not move a mark or its box");
+    assert_ne!(scene(0), scene(4), "the dark preset must change the primitives");
+}
+
+/// Phase 4 (04-02): radar typography joins the frame's contract (D-05). The value ticks and the
+/// category labels sit on the preset's tick rung — the same `type_scale.tick` rung the frame
+/// draws axis and category labels on — every radar text is preset ink, and the rings and spokes
+/// stay tokenized dashed grid strokes that no preset moves.
+#[test]
+fn radar_labels_and_grid_follow_preset_tokens() {
+    let cats = ["Q1", "Q2", "Q3", "Q4", "Q5", "Q6"];
+    let scene = |style: u32| {
+        let mut c = chart(ChartKind::Radar);
+        c.style = style;
+        c.title = None;
+        c.legend = LegendPos::None;
+        render(&c, &sample(ChartKind::Radar), 640.0, 400.0, &ApproxMeasure)
+    };
+    for style in [0u32, 3, 4] {
+        let tokens = chart_style(style);
+        let rung = tokens.type_scale.tick;
+        let p = scene(style);
+        // Every radar text is a value tick or a category label: preset ink on the tick rung.
+        let mut saw_tick = false;
+        let mut saw_cat = false;
+        for q in &p {
+            let Prim::Text { text, color, size, .. } = q else { continue };
+            assert_eq!(*color, tokens.text, "style {style}: radar text {text:?} must be preset ink");
+            assert_eq!(size.to_bits(), rung.to_bits(), "style {style}: radar label {text:?} must sit on the tick rung {rung}");
+            if text.contains('$') {
+                saw_tick = true;
+            }
+            if cats.contains(&text.as_str()) {
+                saw_cat = true;
+            }
+        }
+        assert!(saw_tick, "style {style}: radar value ticks drawn");
+        assert!(saw_cat, "style {style}: radar category labels drawn");
+        // Rings and spokes are the preset's dashed grid strokes.
+        let mut grid_lines = 0;
+        for q in &p {
+            if let Prim::Line { color, dash, .. } = q {
+                if *color == tokens.grid.0 {
+                    assert!(*dash, "style {style}: radar rings and spokes are dashed grid strokes");
+                    grid_lines += 1;
+                }
+            }
+        }
+        assert!(grid_lines >= 7, "style {style}: rings plus spokes drawn ({grid_lines})");
+    }
+    // The preset ladder reaches the labels: Minimal (3) lifts the rung above the default.
+    let rung_sizes = |style: u32| -> Vec<f32> {
+        scene(style)
+            .iter()
+            .filter_map(|q| match q {
+                Prim::Text { size, .. } => Some(*size),
+                _ => None,
+            })
+            .collect()
+    };
+    let sizes0 = rung_sizes(0);
+    let sizes3 = rung_sizes(3);
+    assert!(sizes0.iter().all(|s| (*s - 9.0).abs() < 1e-6), "style 0: every label on the 9.0 rung {sizes0:?}");
+    assert!(sizes3.iter().all(|s| (*s - 9.7).abs() < 1e-6), "style 3: every label on the 9.7 rung {sizes3:?}");
+    // Geometry is preset-proof: no preset may move a ring, a spoke, a series point or a label
+    // anchor — only the ink and the type rung change.
+    let geometry = |style: u32| -> (Vec<(Vec<[f32; 2]>, bool)>, Vec<(f32, f32, String)>) {
+        let p = scene(style);
+        let lines = p
+            .iter()
+            .filter_map(|q| match q {
+                Prim::Line { pts, dash, .. } => Some((pts.clone(), *dash)),
+                _ => None,
+            })
+            .collect();
+        let texts = p
+            .iter()
+            .filter_map(|q| match q {
+                Prim::Text { x, y, text, .. } => Some((*x, *y, text.clone())),
+                _ => None,
+            })
+            .collect();
+        (lines, texts)
+    };
+    assert_eq!(geometry(0), geometry(3), "the preset must not move a ring, spoke, series point or label anchor");
+    assert_eq!(geometry(0), geometry(4), "the preset must not move a ring, spoke, series point or label anchor");
+}
+
 #[test]
 fn pie_points_follow_the_chart_preset() {
     let mut wb = Workbook::new();
