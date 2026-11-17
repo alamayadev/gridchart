@@ -1482,6 +1482,48 @@ fn sparklines() {
     assert!(render_sparkline(SparklineKind::Line, &[], [0; 4], false, 10.0, 10.0).is_empty());
 }
 
+#[test]
+fn sparklines_follow_preset_style_without_breaking_semantics() {
+    let v = [Some(3.0), Some(-2.0), None, Some(4.0), Some(0.5), Some(2.5)];
+    let blue: Rgba = [0x2B, 0x7C, 0xD3, 0xFF];
+    let bars = |p: &[Prim]| {
+        p.iter()
+            .filter_map(|q| match q {
+                Prim::Rect { x, y, w, h, fill: Some(Fill::Solid(c)), .. } => Some((*x, *y, *w, *h, *c)),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let scene = |style, kind, markers| render_sparkline_with_style(kind, &v, blue, markers, 60.0, 16.0, &chart_style(style));
+    for style in [0u32, 4] {
+        let tokens = chart_style(style);
+        // Line markers carry the preset's marker-ring ink at its weight.
+        let line = scene(style, SparklineKind::Line, true);
+        let rings: Vec<(Rgba, f32)> = line.iter().filter_map(|p| match p { Prim::Circle { stroke, .. } => *stroke, _ => None }).collect();
+        assert_eq!(rings.len(), 5, "style {style}: one ring per visible point");
+        assert!(rings.iter().all(|(c, w)| *c == tokens.marker_ring.0 && *w == tokens.marker_ring.1), "style {style}: {rings:?}");
+        // Negative columns stay "down" red; positives keep the caller colour.
+        let col = bars(&scene(style, SparklineKind::Column, false));
+        assert_eq!(col.iter().filter(|b| b.4 == crate::render::DOWN).count(), 1);
+        assert_eq!(col.iter().filter(|b| b.4 == blue).count(), 4);
+        // Win/loss: one loss bar below the baseline, four wins above it.
+        let wl = bars(&scene(style, SparklineKind::WinLoss, false));
+        let loss: Vec<_> = wl.iter().filter(|b| b.4 == crate::render::DOWN).collect();
+        let wins: Vec<_> = wl.iter().filter(|b| b.4 != crate::render::DOWN).collect();
+        assert_eq!((loss.len(), wins.len()), (1, 4));
+        assert!(loss[0].1 > wins[0].1, "style {style}: loss sits below the wins (y grows down)");
+    }
+    // Preset sensitivity: the dark preset changes the style-aware line scene…
+    assert_ne!(scene(0, SparklineKind::Line, true), scene(4, SparklineKind::Line, true));
+    // …while column and win/loss bars stay preset-proof in geometry and ink.
+    for kind in [SparklineKind::Column, SparklineKind::WinLoss] {
+        assert_eq!(bars(&scene(0, kind, false)), bars(&scene(4, kind, false)));
+    }
+    // Legacy entrypoint delegates to the default preset.
+    assert_eq!(render_sparkline(SparklineKind::Line, &v, blue, true, 60.0, 16.0), scene(0, SparklineKind::Line, true));
+    assert_eq!(render_sparkline(SparklineKind::Column, &v, blue, false, 60.0, 16.0), scene(0, SparklineKind::Column, false));
+}
+
 // ---------------------------------------------------------------- trendlines
 
 fn close(a: f64, b: f64) -> bool {

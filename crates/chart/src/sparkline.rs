@@ -4,11 +4,27 @@ use gridcraft_model::SparklineKind;
 
 use crate::render::{DOWN, finalize};
 use crate::resolve::MAX_POINTS;
-use crate::{Fill, Prim, Rgba};
+use crate::{ChartStyle, Fill, Prim, Rgba};
 
-/// Draws a sparkline into a `w`×`h` box at the origin. Gaps (`None`) break lines; column and
-/// win/loss sparklines draw negatives in our "down" red.
+/// Draws a sparkline into a `w`×`h` box at the origin, using the default preset. Gaps (`None`)
+/// break lines; column and win/loss sparklines draw negatives in our "down" red.
 pub fn render_sparkline(kind: SparklineKind, values: &[Option<f64>], color: Rgba, markers: bool, w: f32, h: f32) -> Vec<Prim> {
+    render_sparkline_with_style(kind, values, color, markers, w, h, &ChartStyle::default())
+}
+
+/// Style-aware sparkline: line markers carry the preset's marker ring (see
+/// [`ChartStyle::marker_ring`]) like chart markers do. Column and win/loss bars stay
+/// semantic-ink only — negatives in "down" red, everything else in the caller's colour — so
+/// their geometry and fills are identical on every preset by design.
+pub fn render_sparkline_with_style(
+    kind: SparklineKind,
+    values: &[Option<f64>],
+    color: Rgba,
+    markers: bool,
+    w: f32,
+    h: f32,
+    style: &ChartStyle,
+) -> Vec<Prim> {
     if !(w.is_finite() && h.is_finite()) || w < 1.0 || h < 1.0 || w > 1e6 || h > 1e6 {
         return vec![];
     }
@@ -52,7 +68,7 @@ pub fn render_sparkline(kind: SparklineKind, values: &[Option<f64>], color: Rgba
                 let step = (n / 500).max(1);
                 for (j, v) in vals.iter().enumerate().step_by(step) {
                     if let Some(v) = v {
-                        out.push(Prim::Circle { cx: fx(j), cy: fy(*v), r, fill: Some(color), stroke: None });
+                        out.push(Prim::Circle { cx: fx(j), cy: fy(*v), r, fill: Some(color), stroke: Some(style.marker_ring) });
                     }
                 }
             }

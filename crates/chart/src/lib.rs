@@ -43,7 +43,7 @@ pub use resolve::palette::{
 };
 pub use resolve::style::{ChartStyle, TypeScale, chart_style};
 pub use resolve::{default_palette, has_volatile_series, resolve, series_color, series_plot_kind};
-pub use sparkline::render_sparkline;
+pub use sparkline::{render_sparkline, render_sparkline_with_style};
 
 /// Straight (non-premultiplied) RGBA colour.
 pub type Rgba = [u8; 4];
