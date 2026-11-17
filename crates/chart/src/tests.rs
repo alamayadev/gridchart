@@ -1773,7 +1773,8 @@ fn stock_charts_keep_ohl_semantics_across_presets() {
         };
         (chart_style(style), render(&c, &d, 600.0, 400.0, &ApproxMeasure))
     };
-    let mut geometry: Vec<(Vec<Vec<[f32; 2]>>, Vec<(f32, f32, f32, f32)>)> = Vec::new();
+    let mut wick_sets: Vec<Vec<Vec<[f32; 2]>>> = Vec::new();
+    let mut body_sets: Vec<Vec<(f32, f32, f32, f32)>> = Vec::new();
     for style in [0u32, 4] {
         let (tokens, p) = scene(style);
         assert_sane(&p, 600.0, 400.0);
@@ -1802,9 +1803,11 @@ fn stock_charts_keep_ohl_semantics_across_presets() {
             bodies.push((*x, *y, *w, *h));
         }
         assert_eq!((bodies.len(), down), (3, 1), "style {style}: two up, one down");
-        geometry.push((wicks, bodies));
+        wick_sets.push(wicks);
+        body_sets.push(bodies);
     }
-    assert_eq!(geometry[0], geometry[1], "OHLC geometry is preset-proof");
+    assert_eq!(wick_sets[0], wick_sets[1], "OHLC wicks are preset-proof");
+    assert_eq!(body_sets[0], body_sets[1], "OHLC bodies are preset-proof");
     // Preset sensitivity: the dark preset changes the scene.
     assert_ne!(scene(0).1, scene(4).1);
 }
@@ -2582,6 +2585,329 @@ fn partition_specialties_keep_contrast_and_geometry_across_presets() {
     // The presets still reach both scenes.
     assert_ne!(scene(ChartKind::Treemap, 0), scene(ChartKind::Treemap, 4), "the dark preset must change the treemap scene");
     assert_ne!(scene(ChartKind::Sunburst, 0), scene(ChartKind::Sunburst, 4), "the dark preset must change the sunburst scene");
+}
+
+/// Phase 4 (04-03): the specialty-and-sparkline preset matrix. Two light presets (0 default,
+/// 3 Minimal) and the dark preset (4) each render every specialty family, and each family's
+/// load-bearing semantics — waterfall rise/fall inks, funnel stage widths, the dashed radar
+/// grid, box marks on their fills, histogram/treemap/sunburst seams, hollow and solid OHLC
+/// candles, sparkline negatives — are bit-identical across presets, while the dark preset
+/// demonstrably changes every scene. Paired source audit: the specialty renderers
+/// (kinds.rs, sparkline.rs, table.rs, trend.rs) carry no raw WHITE/TEXT/DARK_TEXT/GRID/AXIS
+/// literals; their ink is `ChartStyle` tokens, `frame::on` contrast ink, and the semantic
+/// UP/DOWN constants, exactly as the shared constants in render.rs intend.
+#[test]
+fn specialty_and_sparkline_preset_matrix_preserves_semantics_and_tokens() {
+    matrix_waterfall_semantics();
+    matrix_funnel_semantics();
+    matrix_radar_semantics();
+    matrix_box_semantics();
+    matrix_histogram_semantics();
+    matrix_treemap_semantics();
+    matrix_sunburst_semantics();
+    matrix_stock_semantics();
+    matrix_sparkline_semantics();
+}
+
+/// Matrix helper: `frame::on`, mirrored — readable ink on a fill depends on the fill alone.
+fn matrix_on(fill: Rgba) -> Rgba {
+    let luma = 0.299 * f32::from(fill[0]) + 0.587 * f32::from(fill[1]) + 0.114 * f32::from(fill[2]);
+    if luma < 150.0 { [0xFF, 0xFF, 0xFF, 0xFF] } else { [0x26, 0x26, 0x26, 0xFF] }
+}
+
+/// Matrix helper: a title- and legend-free scene of `sample(kind)` under one preset.
+fn matrix_scene(kind: ChartKind, style: u32) -> Vec<Prim> {
+    let mut c = chart(kind);
+    c.style = style;
+    c.legend = LegendPos::None;
+    c.title = None;
+    render(&c, &sample(kind), 640.0, 400.0, &ApproxMeasure)
+}
+
+fn matrix_waterfall_semantics() {
+    let styles = [0u32, 3, 4];
+    let wf_data = ChartData {
+        category_levels: vec![],
+        palette: vec![],
+        categories: vec!["Start".into(), "Gain".into(), "Drop".into(), "Total".into()],
+        series: vec![series("W", &[12000.0, -4000.0, 3000.0, 0.0], [20, 96, 130, 255], ChartKind::Waterfall)],
+    };
+    let wf_bars = |style: u32| -> Vec<(f32, f32, f32, f32, Rgba)> {
+        let mut c = chart(ChartKind::Waterfall);
+        c.style = style;
+        c.legend = LegendPos::None;
+        let p = render(&c, &wf_data, 640.0, 400.0, &ApproxMeasure);
+        p.iter()
+            .filter_map(|q| match q {
+                Prim::Rect { x, y, w, h, fill: Some(Fill::Solid(col)), .. } if *col != chart_style(style).card => Some((*x, *y, *w, *h, *col)),
+                _ => None,
+            })
+            .collect()
+    };
+    for style in styles {
+        let bars = wf_bars(style);
+        assert_eq!(bars.len(), 4, "style {style}: rise, fall, rise, total");
+        assert_eq!(bars[0].4, crate::render::UP, "style {style}: the gain rises");
+        assert_eq!(bars[1].4, crate::render::DOWN, "style {style}: the drop falls");
+        assert_eq!(bars[2].4, crate::render::UP, "style {style}: the second gain rises");
+        assert_eq!(bars[3].4, [20, 96, 130, 255], "style {style}: the total keeps the series colour");
+    }
+    // 0 and 4 share the 9.0 tick rung, so bar geometry is bit-identical; Minimal (3) lifts the
+    // measuring rung to 9.72, which legitimately nudges the plot — its bars keep ink and count.
+    assert_eq!(wf_bars(0), wf_bars(4), "the preset must not move a waterfall bar");
+    assert_ne!(matrix_scene(ChartKind::Waterfall, 0), matrix_scene(ChartKind::Waterfall, 4), "the dark preset must change the waterfall scene");
+}
+
+fn matrix_funnel_semantics() {
+    let styles = [0u32, 3, 4];
+    let fn_bars = |style: u32| -> Vec<(f32, f32, f32, f32, Rgba)> {
+        matrix_scene(ChartKind::Funnel, style)
+            .iter()
+            .filter_map(|q| match q {
+                Prim::Rect { x, y, w, h, fill: Some(Fill::Solid(col)), .. } if *col != chart_style(style).card => Some((*x, *y, *w, *h, *col)),
+                _ => None,
+            })
+            .collect()
+    };
+    for style in styles {
+        let bars = fn_bars(style);
+        assert_eq!(bars.len(), 6, "style {style}: one funnel stage per category");
+        // Funnel sorts stages by value: widths are proportional to the absolute values,
+        // descending from the widest stage.
+        let mut vals: Vec<f32> = [12000.0f32, 4000.0, 23000.0, 31000.0, 18000.0, 27000.0].iter().map(|v| v.abs()).collect();
+        vals.sort_by(|a, b| b.total_cmp(a));
+        let mut widths: Vec<f32> = bars.iter().map(|b| b.2).collect();
+        widths.sort_by(|a, b| b.total_cmp(a));
+        let unit = widths[0] / vals[0];
+        assert!(widths.iter().zip(&vals).all(|(w, v)| (w / v - unit).abs() < 1e-3), "style {style}: stage widths track the sorted absolute values");
+    }
+    assert_eq!(fn_bars(0), fn_bars(4), "the preset must not move a funnel stage");
+    assert_ne!(matrix_scene(ChartKind::Funnel, 0), matrix_scene(ChartKind::Funnel, 4), "the dark preset must change the funnel scene");
+}
+
+fn matrix_radar_semantics() {
+    let styles = [0u32, 3, 4];
+    let radar_grid = |style: u32| -> Vec<(Vec<[f32; 2]>, bool)> {
+        let tokens = chart_style(style);
+        matrix_scene(ChartKind::Radar, style)
+            .iter()
+            .filter_map(|q| match q {
+                Prim::Line { pts, color, dash, .. } if *color == tokens.grid.0 => Some((pts.clone(), *dash)),
+                _ => None,
+            })
+            .collect()
+    };
+    for style in styles {
+        let grid = radar_grid(style);
+        assert!(grid.len() >= 7, "style {style}: rings plus spokes drawn ({})", grid.len());
+        assert!(grid.iter().all(|(_, dashed)| *dashed), "style {style}: radar grid strokes stay dashed");
+    }
+    // Radar measures its labels at the fixed LABEL_SIZE, so geometry is rung-proof.
+    assert_eq!(radar_grid(0), radar_grid(3), "the preset must not move a ring or spoke");
+    assert_eq!(radar_grid(0), radar_grid(4), "the preset must not move a ring or spoke");
+    assert_ne!(matrix_scene(ChartKind::Radar, 0), matrix_scene(ChartKind::Radar, 4), "the dark preset must change the radar scene");
+}
+
+fn matrix_box_semantics() {
+    let styles = [0u32, 3, 4];
+    let box_fills: Vec<Rgba> = sample(ChartKind::BoxWhisker).series.iter().map(|s| s.color).collect();
+    let box_marks = |style: u32| -> Vec<Vec<Rgba>> {
+        let p = matrix_scene(ChartKind::BoxWhisker, style);
+        box_fills
+            .iter()
+            .map(|fill| {
+                let (bx, by, bw, bh) = p
+                    .iter()
+                    .find_map(|q| match q {
+                        Prim::Rect { x, y, w, h, fill: Some(Fill::Solid(c)), stroke: None, .. } if *c == *fill => Some((*x, *y, *w, *h)),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| panic!("style {style}: the box for fill {fill:?} is not drawn"));
+                p.iter()
+                    .filter_map(|q| match q {
+                        Prim::Line { color, dash: false, pts, .. }
+                            if *color != *fill
+                                && pts.iter().all(|t| t[0] >= bx - 1.0 && t[0] <= bx + bw + 1.0 && t[1] >= by - 1.0 && t[1] <= by + bh + 1.0) =>
+                        {
+                            Some(*color)
+                        }
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .collect()
+    };
+    for style in styles {
+        for (fill, ink) in box_fills.iter().zip(box_marks(style)) {
+            assert_eq!(ink.len(), 3, "style {style} fill {fill:?}: one median bar and two mean-cross legs");
+            assert!(ink.iter().all(|c| *c == matrix_on(*fill)), "style {style} fill {fill:?}: mark ink is the contrast ink on the fill");
+        }
+    }
+    assert_eq!(box_marks(0), box_marks(3), "the preset must not move a mark or its box");
+    assert_eq!(box_marks(0), box_marks(4), "the preset must not move a mark or its box");
+    assert_ne!(matrix_scene(ChartKind::BoxWhisker, 0), matrix_scene(ChartKind::BoxWhisker, 4), "the dark preset must change the box scene");
+}
+
+fn matrix_histogram_semantics() {
+    let styles = [0u32, 3, 4];
+    let hist_bins = |style: u32| -> Vec<(f32, f32, f32, f32)> {
+        let tokens = chart_style(style);
+        matrix_scene(ChartKind::Histogram, style)
+            .iter()
+            .filter_map(|q| match q {
+                Prim::Rect { x, y, w, h, stroke, .. } if *stroke == Some((tokens.slice_seam.0, 0.75)) => Some((*x, *y, *w, *h)),
+                _ => None,
+            })
+            .collect()
+    };
+    for style in styles {
+        assert_eq!(hist_bins(style).len(), 3, "style {style}: ceil(sqrt(6)) bins");
+    }
+    assert_eq!(hist_bins(0), hist_bins(4), "the preset must not move a bin");
+    assert_ne!(matrix_scene(ChartKind::Histogram, 0), matrix_scene(ChartKind::Histogram, 4), "the dark preset must change the histogram scene");
+}
+
+fn matrix_treemap_semantics() {
+    let styles = [0u32, 3, 4];
+    let tm_tiles = |style: u32| -> Vec<[f32; 4]> {
+        let tokens = chart_style(style);
+        matrix_scene(ChartKind::Treemap, style)
+            .iter()
+            .filter_map(|q| match q {
+                Prim::Rect { x, y, w, h, stroke: Some(s), .. } if *s == tokens.slice_seam => Some([*x, *y, *w, *h]),
+                _ => None,
+            })
+            .collect()
+    };
+    for style in styles {
+        assert_eq!(tm_tiles(style).len(), 5, "style {style}: five tiles for five positive values");
+    }
+    assert_eq!(tm_tiles(0), tm_tiles(4), "the preset must not move a tile");
+    assert_ne!(matrix_scene(ChartKind::Treemap, 0), matrix_scene(ChartKind::Treemap, 4), "the dark preset must change the treemap scene");
+}
+
+fn matrix_sunburst_semantics() {
+    let styles = [0u32, 3, 4];
+    let sb_wedges = |style: u32| -> Vec<([f32; 2], f32, f32, f32, f32)> {
+        matrix_scene(ChartKind::Sunburst, style)
+            .iter()
+            .filter_map(|q| match q {
+                Prim::Wedge { cx, cy, r_outer, r_inner, a0, a1, .. } => Some(([*cx, *cy], *r_outer, *r_inner, *a0, *a1)),
+                _ => None,
+            })
+            .collect()
+    };
+    for style in styles {
+        let tokens = chart_style(style);
+        let p = matrix_scene(ChartKind::Sunburst, style);
+        assert_eq!(sb_wedges(style).len(), 6, "style {style}: six wedges for six absolute values");
+        for q in p.iter().filter(|q| matches!(q, Prim::Wedge { .. })) {
+            if let Prim::Wedge { stroke, .. } = q {
+                assert_eq!(*stroke, Some(tokens.slice_seam), "style {style}: wedge seams are the preset slice seam");
+            }
+        }
+    }
+    assert_eq!(sb_wedges(0), sb_wedges(4), "the preset must not move a wedge");
+    assert_ne!(matrix_scene(ChartKind::Sunburst, 0), matrix_scene(ChartKind::Sunburst, 4), "the dark preset must change the sunburst scene");
+}
+
+fn matrix_stock_semantics() {
+    let styles = [0u32, 3, 4];
+    let stock_data = ChartData {
+        category_levels: vec![],
+        palette: vec![],
+        categories: vec!["Mon".into(), "Tue".into(), "Wed".into()],
+        series: vec![
+            series("Open", &[10.0, 12.0, 9.0], [20, 96, 130, 255], ChartKind::Stock),
+            series("High", &[13.0, 13.0, 12.0], [20, 96, 130, 255], ChartKind::Stock),
+            series("Low", &[9.0, 11.0, 8.0], [20, 96, 130, 255], ChartKind::Stock),
+            series("Close", &[12.0, 9.0, 11.0], [20, 96, 130, 255], ChartKind::Stock),
+        ],
+    };
+    let stock_scene = |style: u32| {
+        let mut c = chart(ChartKind::Stock);
+        c.style = style;
+        c.legend = LegendPos::None;
+        c.title = None;
+        render(&c, &stock_data, 640.0, 400.0, &ApproxMeasure)
+    };
+    for style in styles {
+        let tokens = chart_style(style);
+        let p = stock_scene(style);
+        let wicks = p.iter().filter(|q| matches!(q, Prim::Line { color, .. } if *color == tokens.stock)).count();
+        assert_eq!(wicks, 3, "style {style}: one wick per day");
+        let mut hollow = 0;
+        let mut solid = 0;
+        for q in &p {
+            if let Prim::Rect { fill, stroke, .. } = q
+                && *stroke == Some((tokens.stock, 1.0))
+            {
+                if *fill == Some(Fill::Solid(tokens.card)) {
+                    hollow += 1;
+                } else if *fill == Some(Fill::Solid(tokens.stock)) {
+                    solid += 1;
+                }
+            }
+        }
+        assert_eq!((hollow, solid), (2, 1), "style {style}: two hollow up candles and one solid down candle");
+    }
+    let stock_geometry = |style: u32| -> Vec<(f32, f32, f32, f32)> {
+        let tokens = chart_style(style);
+        stock_scene(style)
+            .iter()
+            .filter_map(|q| match q {
+                Prim::Rect { x, y, w, h, stroke, .. } if *stroke == Some((tokens.stock, 1.0)) => Some((*x, *y, *w, *h)),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(stock_geometry(0), stock_geometry(4), "the preset must not move a candle");
+    assert_ne!(stock_scene(0), stock_scene(4), "the dark preset must change the stock scene");
+}
+
+fn matrix_sparkline_semantics() {
+    let styles = [0u32, 3, 4];
+    let vals = [Some(3.0), Some(-2.0), None, Some(4.0), Some(0.5), Some(2.5)];
+    let blue: Rgba = [0x2B, 0x7C, 0xD3, 0xFF];
+    let spark =
+        |kind: SparklineKind, style: u32, markers: bool| render_sparkline_with_style(kind, &vals, blue, markers, 120.0, 36.0, &chart_style(style));
+    for style in styles {
+        let tokens = chart_style(style);
+        let rings: Vec<(Rgba, f32)> = spark(SparklineKind::Line, style, true)
+            .iter()
+            .filter_map(|q| match q {
+                Prim::Circle { stroke, .. } => *stroke,
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rings.len(), 5, "style {style}: one marker per visible point");
+        assert!(rings.iter().all(|r| *r == tokens.marker_ring), "style {style}: marker rings are the preset ring ink");
+        for kind in [SparklineKind::Column, SparklineKind::WinLoss] {
+            let bars: Vec<(f32, f32, f32, f32, Rgba)> = spark(kind, style, false)
+                .iter()
+                .filter_map(|q| match q {
+                    Prim::Rect { x, y, w, h, fill: Some(Fill::Solid(col)), .. } => Some((*x, *y, *w, *h, *col)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(bars.len(), 5, "style {style}: one bar per non-null value");
+            assert_eq!(bars.iter().filter(|b| b.4 == crate::render::DOWN).count(), 1, "style {style}: the negative value stays DOWN");
+            assert_eq!(bars.iter().filter(|b| b.4 == blue).count(), 4, "style {style}: positives keep the caller colour");
+        }
+    }
+    let spark_cols = |style: u32| -> Vec<(f32, f32, f32, f32, Rgba)> {
+        spark(SparklineKind::Column, style, false)
+            .iter()
+            .filter_map(|q| match q {
+                Prim::Rect { x, y, w, h, fill: Some(Fill::Solid(col)), .. } => Some((*x, *y, *w, *h, *col)),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(spark_cols(0), spark_cols(3), "the preset must not move a sparkline bar");
+    assert_eq!(spark_cols(0), spark_cols(4), "the preset must not move a sparkline bar");
+    assert_ne!(spark(SparklineKind::Line, 0, true), spark(SparklineKind::Line, 4, true), "the dark preset must change the sparkline scene");
+    assert_ne!(spark(SparklineKind::Line, 0, true), spark(SparklineKind::Line, 3, true), "Minimal changes the marker-ring weight");
 }
 
 #[test]
