@@ -2,7 +2,7 @@ use super::frame::{Bx, CatAxis, ValAxis, frame, on, value_range};
 use super::legend::{cat_label, point_color};
 use super::{
     Chart, ChartData, Ctx, DOWN, Fmt, HAlign, LABEL_SIZE, MAX_CATS, MAX_LABELS, MAX_MARKERS, MAX_SERIES, MAX_WEDGES, Prim, QuartileMethod, Rgba,
-    SeriesData, TAU, UP, VAlign, WHITE, clean, nice_scale,
+    SeriesData, TAU, UP, VAlign, clean, nice_scale,
 };
 
 // ---------------------------------------------------------------- histogram
@@ -551,7 +551,9 @@ pub(super) fn radar(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx) {
             ctx.grid_path(ring);
         }
         if ti % every == 0 {
-            ctx.text(cx - 3.0, cy - rr, &f.format(t, Some(sc.step)), LABEL_SIZE * 0.9, ctx.style.text, (HAlign::Right, VAlign::Middle));
+            // D-05: value ticks sit on the preset's tick rung, the same rung the frame draws axis
+            // and category labels on, instead of an ad-hoc fraction of LABEL_SIZE.
+            ctx.text(cx - 3.0, cy - rr, &f.format(t, Some(sc.step)), ctx.style.type_scale.tick, ctx.style.text, (HAlign::Right, VAlign::Middle));
         }
     }
     let step = ncat.div_ceil(72).max(1);
@@ -574,8 +576,10 @@ pub(super) fn radar(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx) {
         } else {
             VAlign::Middle
         };
+        // Measured at LABEL_SIZE so the ring budget — and with it the ring and spoke geometry —
+        // stays preset-proof; drawn on the preset's tick rung like every other axis label.
         let t = ctx.fit(labels.get(j).map(String::as_str).unwrap_or(""), LABEL_SIZE, lw.max(20.0));
-        ctx.text(p[0], p[1], &t, LABEL_SIZE, ctx.style.text, (align, valign));
+        ctx.text(p[0], p[1], &t, ctx.style.type_scale.tick, ctx.style.text, (align, valign));
     }
     for s in &data.series {
         let mut pts: Vec<[f32; 2]> = (0..ncat).map(|j| pt(ang(j), sc.frac(s.values.get(j).copied().flatten().unwrap_or(sc.min)) * r)).collect();
@@ -638,10 +642,12 @@ pub(super) fn box_whisker(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: 
         ctx.hline(c - bw / 4.0, c + bw / 4.0, vy(wlo), s.color, 1.25);
         let (yt, yb) = (vy(q3), vy(q1));
         ctx.rect(c - bw / 2.0, yt, bw, (yb - yt).max(0.5), s.color, None);
-        ctx.hline(c - bw / 2.0, c + bw / 2.0, vy(med), WHITE, 1.5);
+        // The marks sit on the series fill, so their ink is the contrast helper — readable on
+        // light fills and on the dark preset alike, never a hardcoded white.
+        ctx.hline(c - bw / 2.0, c + bw / 2.0, vy(med), on(s.color), 1.5);
         let (mx, my, d) = (c, vy(mean), 3.0);
-        ctx.line(vec![[mx - d, my - d], [mx + d, my + d]], WHITE, 1.25);
-        ctx.line(vec![[mx - d, my + d], [mx + d, my - d]], WHITE, 1.25);
+        ctx.line(vec![[mx - d, my - d], [mx + d, my + d]], on(s.color), 1.25);
+        ctx.line(vec![[mx - d, my + d], [mx + d, my - d]], on(s.color), 1.25);
         for o in v.iter().filter(|x| **x < flo || **x > fhi).take(MAX_MARKERS) {
             ctx.out.push(Prim::Circle { cx: c, cy: vy(*o), r: 2.5, fill: None, stroke: Some((s.color, 1.0)) });
         }
