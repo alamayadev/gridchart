@@ -637,7 +637,18 @@ fn paint_sparklines(q: &QuadrantPaint<'_>, range: RangeRef) {
             v => vec![v.as_f64()],
         };
         let col = sp.color.resolve(&wb.theme).unwrap_or([0x2B, 0x7C, 0xD3]);
-        let prims = gridcraft_chart::render_sparkline(sp.kind, &vals, [col[0], col[1], col[2], 255], sp.markers, rect.width(), rect.height());
+        // In-sheet sparklines carry no chart object, so the sheet's UI theme picks the preset:
+        // the dark theme maps onto the dark chart family (4), anything else the default (0).
+        let style = gridcraft_chart::chart_style(if q.tokens.dark { 4 } else { 0 });
+        let prims = gridcraft_chart::render_sparkline_with_style(
+            sp.kind,
+            &vals,
+            [col[0], col[1], col[2], 255],
+            sp.markers,
+            rect.width(),
+            rect.height(),
+            &style,
+        );
         crate::chartview::paint_prims(p, rect.min, &prims, 1.0);
     }
 }
