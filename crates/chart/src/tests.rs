@@ -1815,6 +1815,101 @@ fn funnel_value_labels_follow_the_data_labels_flag() {
     }
 }
 
+/// Phase 4 (04-01): the specialty trio follows the selected preset. Labels on the card carry the
+/// preset's `text` ink, waterfall connectors are dashed strokes in the preset `axis` colour,
+/// histogram bars keep their token-sourced seam, and a label fitted inside a funnel stage may use
+/// the preset-independent contrast ink `on(fill)`. The dark preset must visibly change the scene
+/// for the same data, while style 1 stays the polished default of style 0.
+#[test]
+fn waterfall_funnel_histogram_follow_selected_preset_tokens() {
+    let render_kind = |kind: ChartKind, style: u32| {
+        let mut c = chart(kind);
+        c.style = style;
+        render(&c, &sample(kind), 640.0, 400.0, &ApproxMeasure)
+    };
+    // The contrast helper `frame::on`, mirrored here: ink that sits on a series fill depends on
+    // the fill alone, so it is the same on every preset.
+    let inside_ink = |fill: Rgba| -> Rgba {
+        let luma = 0.299 * f32::from(fill[0]) + 0.587 * f32::from(fill[1]) + 0.114 * f32::from(fill[2]);
+        if luma < 150.0 { [0xFF, 0xFF, 0xFF, 0xFF] } else { [0x26, 0x26, 0x26, 0xFF] }
+    };
+    let funnel_fill = sample(ChartKind::Funnel).series[0].color;
+    let cats: Vec<&str> = vec!["Q1", "Q2", "Q3", "Q4", "Q5", "Q6"];
+
+    for style in [0u32, 1, 4] {
+        let tokens = chart_style(style);
+
+        // Waterfall: every label is preset ink; dashed two-point horizontal lines are connectors
+        // in the preset axis colour or value-axis gridlines, never a raw literal.
+        let p = render_kind(ChartKind::Waterfall, style);
+        for q in &p {
+            if let Prim::Text { color, .. } = q {
+                assert_eq!(*color, tokens.text, "style {style}: waterfall text must be preset ink");
+            }
+        }
+        let mut connectors = 0;
+        for q in &p {
+            if let Prim::Line { color, dash: true, pts, .. } = q
+                && pts.len() == 2
+                && pts[0][1] == pts[1][1]
+            {
+                assert!(*color == tokens.axis || *color == tokens.grid.0, "style {style}: stray dashed line in {color:?}");
+                if *color == tokens.axis {
+                    connectors += 1;
+                }
+            }
+        }
+        assert!(connectors >= 3, "style {style}: waterfall connectors drawn ({connectors})");
+
+        // Histogram: every bin rect carries the preset seam colour at the hairline weight, and
+        // every label (interval, count, axis) is preset ink.
+        let p = render_kind(ChartKind::Histogram, style);
+        let bars: Vec<Option<(Rgba, f32)>> = p
+            .iter()
+            .filter_map(|q| match q {
+                Prim::Rect { fill: Some(f), stroke, .. } if f.start() != tokens.card => Some(*stroke),
+                _ => None,
+            })
+            .collect();
+        assert!(bars.len() >= 3, "style {style}: histogram bins drawn ({})", bars.len());
+        for stroke in &bars {
+            assert_eq!(*stroke, Some((tokens.slice_seam.0, 0.75)), "style {style}: histogram seam is the preset slice-seam colour");
+        }
+        for q in &p {
+            if let Prim::Text { color, .. } = q {
+                assert_eq!(*color, tokens.text, "style {style}: histogram text must be preset ink");
+            }
+        }
+
+        // Funnel: category labels beside the fill are preset ink; a fitted value label inside a
+        // stage uses the contrast ink on the series fill, and an unfitting one falls back to the
+        // preset ink.
+        let p = render_kind(ChartKind::Funnel, style);
+        let mut saw_category = false;
+        for q in &p {
+            if let Prim::Text { text, color, .. } = q {
+                if cats.contains(&text.as_str()) {
+                    saw_category = true;
+                    assert_eq!(*color, tokens.text, "style {style}: funnel category label must be preset ink");
+                } else {
+                    assert!(
+                        *color == tokens.text || *color == inside_ink(funnel_fill),
+                        "style {style}: funnel label ink {color:?} is neither preset text nor contrast ink"
+                    );
+                }
+            }
+        }
+        assert!(saw_category, "style {style}: funnel category labels drawn");
+    }
+
+    // The preset ID must reach the primitives for the same data: the dark preset changes the
+    // scene, and 1 is the same polished default as 0.
+    for kind in [ChartKind::Waterfall, ChartKind::Histogram, ChartKind::Funnel] {
+        assert_ne!(render_kind(kind, 0), render_kind(kind, 4), "{kind:?}: the dark preset must change the primitives");
+        assert_eq!(render_kind(kind, 0), render_kind(kind, 1), "{kind:?}: style 1 is the same default as style 0");
+    }
+}
+
 #[test]
 fn pie_points_follow_the_chart_preset() {
     let mut wb = Workbook::new();
