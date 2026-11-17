@@ -1499,7 +1499,13 @@ fn sparklines_follow_preset_style_without_breaking_semantics() {
         let tokens = chart_style(style);
         // Line markers carry the preset's marker-ring ink at its weight.
         let line = scene(style, SparklineKind::Line, true);
-        let rings: Vec<(Rgba, f32)> = line.iter().filter_map(|p| match p { Prim::Circle { stroke, .. } => *stroke, _ => None }).collect();
+        let rings: Vec<(Rgba, f32)> = line
+            .iter()
+            .filter_map(|p| match p {
+                Prim::Circle { stroke, .. } => *stroke,
+                _ => None,
+            })
+            .collect();
         assert_eq!(rings.len(), 5, "style {style}: one ring per visible point");
         assert!(rings.iter().all(|(c, w)| *c == tokens.marker_ring.0 && *w == tokens.marker_ring.1), "style {style}: {rings:?}");
         // Negative columns stay "down" red; positives keep the caller colour.
@@ -1682,6 +1688,125 @@ fn line_chart_draws_trendline_forecast_and_labels() {
     s.values.truncate(1);
     let one = ChartData { category_levels: vec![], palette: vec![], categories: vec!["a".into()], series: vec![s] };
     assert!(lines_of(&render(&c, &one, 600.0, 400.0, &m), tc).is_empty());
+}
+
+#[test]
+fn data_table_and_trend_labels_follow_preset_tokens() {
+    let tc: Rgba = [90, 60, 20, 255];
+    let scene = |style: u32, cats: usize| {
+        let mut c = chart(ChartKind::Line);
+        c.style = style;
+        c.legend = LegendPos::None; // keeps legend swatches out of the line counts
+        c.gridlines = false;
+        c.data_labels = false;
+        c.data_table = Some(gridcraft_model::ChartDataTable::default());
+        let mut s = series("Sales", &[9.0, 7.0, 5.0, 3.0], [10, 20, 30, 255], ChartKind::Line);
+        s.trendlines = vec![TrendlineData {
+            spec: Trendline { forward: 1.0, display_equation: true, display_r_squared: true, ..Trendline::default() },
+            color: tc,
+        }];
+        let mut d =
+            ChartData { category_levels: vec![], palette: vec![], categories: ["a", "b", "c", "d"].map(String::from).to_vec(), series: vec![s] };
+        if cats > 4 {
+            d.categories = (0..cats).map(|i| i.to_string()).collect();
+        }
+        render(&c, &d, 600.0, 400.0, &ApproxMeasure)
+    };
+    for style in [0u32, 3, 4] {
+        let tokens = chart_style(style);
+        let rung = tokens.type_scale.tick;
+        let p = scene(style, 4);
+        assert_sane(&p, 600.0, 400.0);
+        // Every card text — table cells, headers, key column, trend labels — is preset text ink
+        // on the type-scale tick rung.
+        let mut seen_rung = 0;
+        for prim in &p {
+            let Prim::Text { text, size, color, .. } = prim else { continue };
+            assert_eq!(*color, tokens.text, "style {style}: {text}");
+            if ["Sales", "a", "$9", "y = -2x + 11", "R² = 1"].contains(&text.as_str()) {
+                assert_eq!(size.to_bits(), rung.to_bits(), "style {style}: {text} at {size}, rung {rung}");
+                seen_rung += 1;
+            }
+        }
+        assert_eq!(seen_rung, 5, "style {style}: header, key, one value, equation, R²");
+        // The trendline keeps its own ink and geometry.
+        assert_eq!(lines_of(&p, tc).len(), 1);
+        // Table borders are the preset's axis ink: 0.75 hairlines, never dashed.
+        let borders: Vec<&Prim> =
+            p.iter().filter(|q| matches!(q, Prim::Line { color, width, .. } if *color == tokens.axis && *width == 0.75)).collect();
+        assert!(!borders.is_empty(), "style {style}: borders drawn");
+        for b in borders {
+            if let Prim::Line { dash, .. } = b {
+                assert!(!*dash, "style {style}: solid hairline border");
+            }
+        }
+        // Dense table: the explicit "needs more space" note is preset text ink too.
+        let dense = scene(style, 300);
+        assert!(texts(&dense).contains(&"Data table needs more space"));
+        assert!(
+            dense.iter().any(|p| matches!(p, Prim::Text { text, color, .. } if text == "Data table needs more space" && *color == tokens.text)),
+            "style {style}"
+        );
+    }
+    // Preset sensitivity: the dark preset changes the scene.
+    assert_ne!(scene(0, 4), scene(4, 4));
+}
+
+#[test]
+fn stock_charts_keep_ohl_semantics_across_presets() {
+    let scene = |style: u32| {
+        let mut c = chart(ChartKind::Stock);
+        c.style = style;
+        c.legend = LegendPos::None;
+        c.gridlines = false;
+        c.data_labels = false;
+        let d = ChartData {
+            category_levels: vec![],
+            palette: vec![],
+            categories: ["Mon", "Tue", "Wed"].map(String::from).to_vec(),
+            series: vec![
+                series("Open", &[10.0, 12.0, 9.0], [10, 20, 30, 255], ChartKind::Stock),
+                series("High", &[13.0, 13.0, 12.0], [40, 50, 60, 255], ChartKind::Stock),
+                series("Low", &[9.0, 11.0, 8.0], [70, 80, 90, 255], ChartKind::Stock),
+                series("Close", &[12.0, 9.0, 11.0], [100, 110, 120, 255], ChartKind::Stock),
+            ],
+        };
+        (chart_style(style), render(&c, &d, 600.0, 400.0, &ApproxMeasure))
+    };
+    let mut geometry: Vec<(Vec<Vec<[f32; 2]>>, Vec<(f32, f32, f32, f32)>)> = Vec::new();
+    for style in [0u32, 4] {
+        let (tokens, p) = scene(style);
+        assert_sane(&p, 600.0, 400.0);
+        // Wicks run high→low in the preset's stock ink.
+        let wicks: Vec<Vec<[f32; 2]>> = p
+            .iter()
+            .filter_map(|q| match q {
+                Prim::Line { pts, color, width, .. } if *color == tokens.stock => Some(pts.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(wicks.len(), 3, "style {style}: one wick per day");
+        // Hollow up candles on the card fill, the down day solid stock ink, all stroked in stock.
+        let mut bodies: Vec<(f32, f32, f32, f32)> = Vec::new();
+        let mut down = 0;
+        for q in &p {
+            let Prim::Rect { x, y, w, h, fill: Some(Fill::Solid(c)), stroke: Some(s), .. } = q else { continue };
+            if *s != (tokens.stock, 1.0) {
+                continue; // card and other non-body rects
+            }
+            if *c == tokens.stock {
+                down += 1;
+            } else {
+                assert_eq!(*c, tokens.card, "style {style}: hollow body {c:?}");
+            }
+            bodies.push((*x, *y, *w, *h));
+        }
+        assert_eq!((bodies.len(), down), (3, 1), "style {style}: two up, one down");
+        geometry.push((wicks, bodies));
+    }
+    assert_eq!(geometry[0], geometry[1], "OHLC geometry is preset-proof");
+    // Preset sensitivity: the dark preset changes the scene.
+    assert_ne!(scene(0).1, scene(4).1);
 }
 
 #[test]

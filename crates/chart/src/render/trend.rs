@@ -1,8 +1,7 @@
 use super::frame::{Bx, value_range};
 use super::lines::decimate;
 use super::{
-    ChartKind, Ctx, HAlign, LABEL_SIZE, LineDash, MAX_CATS, MAX_LINE_PTS, MAX_TRENDLINES, Prim, SeriesData, TrendlineKind, VAlign, fit_trendline,
-    moving_average,
+    ChartKind, Ctx, HAlign, LineDash, MAX_CATS, MAX_LINE_PTS, MAX_TRENDLINES, Prim, SeriesData, TrendlineKind, VAlign, fit_trendline, moving_average,
 };
 
 // ---------------------------------------------------------------- trendlines
@@ -156,15 +155,16 @@ pub(super) fn draw_trendlines(
     }
 }
 
-/// Trendline equation / R² labels, stacked in the plot's top-right corner.
+/// Trendline equation / R² labels, stacked in the plot's top-right corner on the tick rung.
 pub(super) fn draw_trend_labels(ctx: &mut Ctx, plot: Bx, labels: &[String]) {
-    let lh = LABEL_SIZE * 1.3;
+    let rung = ctx.style.type_scale.tick;
+    let lh = rung * 1.3;
     for (i, t) in labels.iter().enumerate() {
         let y = plot.y + 4.0 + i as f32 * lh;
         if y + lh > plot.bottom() {
             break;
         }
-        let t = ctx.fit(t, LABEL_SIZE, plot.w - 8.0);
-        ctx.text(plot.right() - 4.0, y, &t, LABEL_SIZE, ctx.style.text, (HAlign::Right, VAlign::Top));
+        let t = ctx.fit(t, rung, plot.w - 8.0);
+        ctx.text(plot.right() - 4.0, y, &t, rung, ctx.style.text, (HAlign::Right, VAlign::Top));
     }
 }
