@@ -2216,7 +2216,11 @@ fn histogram_bins_and_labels_keep_semantics_across_presets() {
         t.sort_unstable();
         t
     }
-    assert_eq!(bars0.iter().map(|b| (b.0, b.1, b.2, b.3)).collect::<Vec<_>>(), bars4.iter().map(|b| (b.0, b.1, b.2, b.3)).collect::<Vec<_>>(), "the preset must not move a bin");
+    assert_eq!(
+        bars0.iter().map(|b| (b.0, b.1, b.2, b.3)).collect::<Vec<_>>(),
+        bars4.iter().map(|b| (b.0, b.1, b.2, b.3)).collect::<Vec<_>>(),
+        "the preset must not move a bin"
+    );
     assert_eq!(strip_ink(&p0), strip_ink(&p4), "the preset must not change a label");
 }
 
@@ -2337,8 +2341,7 @@ fn box_whisker_marks_use_contrast_aware_ink_across_presets() {
     for style in [0u32, 4] {
         let p = scene(style);
         for fill in [dark_fill, light_fill] {
-            let (ink, median, mean, top, bottom) =
-                marks(&p, fill).unwrap_or_else(|| panic!("style {style}: the box for fill {fill:?} is not drawn"));
+            let (ink, median, mean, top, bottom) = marks(&p, fill).unwrap_or_else(|| panic!("style {style}: the box for fill {fill:?} is not drawn"));
             assert_eq!(ink.len(), 3, "style {style} fill {fill:?}: one median bar and two mean-cross legs");
             for c in &ink {
                 assert_eq!(*c, on(fill), "style {style} fill {fill:?}: mark ink must be the contrast ink on the fill");
@@ -2525,7 +2528,9 @@ fn partition_specialties_keep_contrast_and_geometry_across_presets() {
     let wedges = |p: &[Prim]| -> Vec<(Rgba, [f32; 2], f32, f32, f32, f32, f32)> {
         p.iter()
             .filter_map(|q| match q {
-                Prim::Wedge { cx, cy, r_outer, r_inner, a0, a1, fill, .. } => Some((solid(fill)?, [*cx, *cy], *r_outer, *r_inner, *a0, *a1, (*a0 + *a1) / 2.0)),
+                Prim::Wedge { cx, cy, r_outer, r_inner, a0, a1, fill, .. } => {
+                    Some((solid(fill)?, [*cx, *cy], *r_outer, *r_inner, *a0, *a1, (*a0 + *a1) / 2.0))
+                }
                 _ => None,
             })
             .collect()
@@ -2537,10 +2542,7 @@ fn partition_specialties_keep_contrast_and_geometry_across_presets() {
         let ws = wedges(&p);
         assert_eq!(ws.len(), 6, "style {style}: six sunburst wedges");
         assert!(ws.iter().all(|w| preset.contains(&w.0)), "style {style}: wedges take the preset palette");
-        assert!(
-            ws.iter().all(|w| (w.3 / w.2 - 0.2).abs() < 1e-3),
-            "style {style}: the sunburst hole keeps its measured 20% size"
-        );
+        assert!(ws.iter().all(|w| (w.3 / w.2 - 0.2).abs() < 1e-3), "style {style}: the sunburst hole keeps its measured 20% size");
         for q in p.iter().filter(|q| matches!(q, Prim::Wedge { .. })) {
             if let Prim::Wedge { stroke, .. } = q {
                 assert_eq!(*stroke, Some(tokens.slice_seam), "style {style}: wedge seams are the preset slice seam");
