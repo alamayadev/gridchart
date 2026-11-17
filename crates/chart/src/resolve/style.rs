@@ -56,11 +56,13 @@ pub struct ChartStyle {
     pub marker_ring: (Rgba, f32),
     /// Seam between slices/wedges: the card colour on every preset.
     pub slice_seam: (Rgba, f32),
+    /// Corner radii for rectangular primitives: [nw, ne, se, sw].
+    pub corner_radii: [f32; 4],
     /// The type ladder for this preset.
     pub type_scale: TypeScale,
 }
 
-/// Every preset authors its full token set in one call: the eleven fields are the style's whole
+/// Every preset authors its full token set in one call: the twelve fields are the style's whole
 /// surface and ink contract, so splitting the parameter list would only hide parts of it.
 #[allow(clippy::too_many_arguments)]
 const fn style(
@@ -74,6 +76,7 @@ const fn style(
     baseline: (Rgba, f32),
     marker_ring_w: f32,
     slice_seam_w: f32,
+    corner_radii: [f32; 4],
     type_scale: TypeScale,
 ) -> ChartStyle {
     ChartStyle {
@@ -88,6 +91,7 @@ const fn style(
         baseline,
         marker_ring: (card, marker_ring_w),
         slice_seam: (card, slice_seam_w),
+        corner_radii,
         type_scale,
     }
 }
@@ -109,6 +113,7 @@ const DEFAULT: ChartStyle = style(
     ([0xA6, 0xA6, 0xA6, 0xFF], 1.25),
     crate::render::MARKER_RING_WEIGHT,
     1.5,
+    [0.0; 4],
     TypeScale::DEFAULT,
 );
 
@@ -123,6 +128,7 @@ const VIBRANT: ChartStyle = style(
     ([0xA6, 0xA6, 0xA6, 0xFF], 1.25),
     0.75,
     1.5,
+    [0.0; 4],
     TypeScale::rungs(920),
 );
 
@@ -137,6 +143,7 @@ const MINIMAL: ChartStyle = style(
     ([0xA6, 0xA6, 0xA6, 0xFF], 1.25),
     0.60,
     1.0,
+    [0.0; 4],
     TypeScale::rungs(1080),
 );
 
@@ -152,6 +159,7 @@ pub const DARK: ChartStyle = style(
     ([0x8A, 0x94, 0xA4, 0xFF], 1.25),
     1.00,
     2.0,
+    [0.0; 4],
     TypeScale::DEFAULT,
 );
 
@@ -166,6 +174,7 @@ const PASTEL: ChartStyle = style(
     ([0xA6, 0xA6, 0xA6, 0xFF], 1.25),
     0.85,
     1.5,
+    [0.0; 4],
     TypeScale::rungs(960),
 );
 
@@ -180,6 +189,7 @@ const TINTED: ChartStyle = style(
     ([0xA6, 0xA6, 0xA6, 0xFF], 1.25),
     0.85,
     1.5,
+    [0.0; 4],
     TypeScale::DEFAULT,
 );
 
