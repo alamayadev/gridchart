@@ -1910,6 +1910,207 @@ fn waterfall_funnel_histogram_follow_selected_preset_tokens() {
     }
 }
 
+/// Phase 4 (04-01): the preset changes ink, not meaning. Across light and dark presets the
+/// waterfall keeps its rise/fall/total bars and its step connectors bar for bar and pixel for
+/// pixel: the total bar tops out where the running sum ended and rests on the same baseline.
+#[test]
+fn waterfall_connectors_and_totals_keep_semantics_across_presets() {
+    let d = ChartData {
+        category_levels: vec![],
+        palette: vec![],
+        categories: vec!["Start".into(), "Gain".into(), "Drop".into(), "Total".into()],
+        series: vec![series("W", &[12000.0, -4000.0, 3000.0, 0.0], [20, 96, 130, 255], ChartKind::Waterfall)],
+    };
+    let scene = |style: u32| {
+        let mut c = chart(ChartKind::Waterfall);
+        c.style = style;
+        c.legend = LegendPos::None;
+        let p = render(&c, &d, 640.0, 400.0, &ApproxMeasure);
+        let bars: Vec<(f32, f32, f32, f32, Rgba)> = p
+            .iter()
+            .filter_map(|q| match q {
+                Prim::Rect { x, y, w, h, fill: Some(Fill::Solid(col)), .. } if *col != chart_style(style).card => Some((*x, *y, *w, *h, *col)),
+                _ => None,
+            })
+            .collect();
+        let connectors: Vec<(f32, f32, f32)> = p
+            .iter()
+            .filter_map(|q| match q {
+                Prim::Line { color, dash: true, pts, .. } if *color == chart_style(style).axis && pts.len() == 2 && pts[0][1] == pts[1][1] => {
+                    Some((pts[0][0], pts[1][0], pts[0][1]))
+                }
+                _ => None,
+            })
+            .collect();
+        (p, bars, connectors)
+    };
+
+    for style in [0u32, 4] {
+        let (p, bars, conns) = scene(style);
+        assert_eq!(bars.len(), 4, "style {style}: rise, fall, rise, total");
+        // Rise/fall/total semantic colours: UP, DOWN, UP, series colour.
+        assert_eq!(bars[0].4, crate::render::UP, "style {style}: the gain rises");
+        assert_eq!(bars[1].4, crate::render::DOWN, "style {style}: the drop falls");
+        assert_eq!(bars[2].4, crate::render::UP, "style {style}: the second gain rises");
+        assert_eq!(bars[3].4, [20, 96, 130, 255], "style {style}: the total bar keeps the series colour");
+        // Heights stay proportional to the deltas: 12000, 4000, 3000 and a 11000 total.
+        assert!((bars[1].3 / bars[0].3 - 1.0 / 3.0).abs() < 0.01, "style {style}: fall height {bars:?}");
+        assert!((bars[2].3 / bars[0].3 - 0.25).abs() < 0.01, "style {style}: second rise height {bars:?}");
+        assert!((bars[3].3 / bars[0].3 - 11.0 / 12.0).abs() < 0.01, "style {style}: total height {bars:?}");
+        // The total bar starts on the baseline (like the first bar) and tops out where the
+        // running sum ended (the top of the last delta).
+        assert!((bars[3].1 - bars[2].1).abs() < 0.01, "style {style}: the total tops out at the running sum");
+        assert!((bars[3].1 + bars[3].3 - (bars[0].1 + bars[0].3)).abs() < 0.01, "style {style}: the total rests on the same baseline");
+        // One connector per step, on the running edge of its bar (the top of a rise, the bottom
+        // of a fall — the value the running sum reached), reaching the next bar's slot.
+        assert_eq!(conns.len(), 3, "style {style}: a connector per step");
+        for (j, (x0, x1, y)) in conns.iter().enumerate() {
+            let edge = if bars[j].4 == crate::render::DOWN { bars[j].1 + bars[j].3 } else { bars[j].1 };
+            assert!((y - edge).abs() < 0.01, "style {style}: connector {j} sits on the running edge");
+            assert!((x1 - bars[j + 1].0).abs() < 0.01, "style {style}: connector {j} reaches the next bar");
+            assert!(*x0 > bars[j].0, "style {style}: connector {j} starts at its own bar");
+        }
+        // Labels: the deltas and the total value the running sum reached.
+        let t = texts(&p);
+        for want in ["$12,000", "$11,000", "Total"] {
+            assert!(t.contains(&want), "style {style}: label {want} missing");
+        }
+    }
+
+    let (_, bars0, conns0) = scene(0);
+    let (_, bars4, conns4) = scene(4);
+    assert_eq!(bars0, bars4, "the preset must not move a waterfall bar");
+    assert_eq!(conns0, conns4, "the preset must not move a connector");
+}
+
+/// Phase 4 (04-01): histogram semantics are preset-proof. Bin construction, boundary membership
+/// (a value on an edge belongs to the bin ending there), interval labels and counts are the same
+/// scene on light and dark presets; only the token-sourced ink changes.
+#[test]
+fn histogram_bins_and_labels_keep_semantics_across_presets() {
+    let d = ChartData {
+        category_levels: vec![],
+        palette: vec![],
+        categories: vec![],
+        series: vec![SeriesData {
+            name: "h".into(),
+            values: vec![Some(0.0), Some(7.5), Some(15.0)],
+            x: None,
+            sizes: None,
+            color: [10, 20, 30, 255],
+            kind: ChartKind::Histogram,
+            secondary: false,
+            smooth: false,
+            trendlines: Vec::new(),
+            number_format: "General".into(),
+        }],
+    };
+    let scene = |style: u32| {
+        let mut c = chart(ChartKind::Histogram);
+        c.style = style;
+        c.legend = LegendPos::None;
+        let p = render(&c, &d, 640.0, 400.0, &ApproxMeasure);
+        type Bar = (f32, f32, f32, f32, Option<(Rgba, f32)>);
+        let bars: Vec<Bar> = p
+            .iter()
+            .filter_map(|q| match q {
+                Prim::Rect { x, y, w, h, fill: Some(f), stroke, .. } if f.start() == [10, 20, 30, 255] => Some((*x, *y, *w, *h, *stroke)),
+                _ => None,
+            })
+            .collect();
+        (p, bars)
+    };
+
+    for style in [0u32, 4] {
+        let (p, bars) = scene(style);
+        assert_eq!(bars.len(), 2, "style {style}: two bins [0, 7.5] and (7.5, 15]");
+        // 7.5 is an upper edge, so it belongs to the first bin: counts 2 and 1.
+        assert!((bars[0].3 / bars[1].3 - 2.0).abs() < 0.01, "style {style}: boundary membership {bars:?}");
+        // Interval labels spell the edges; count labels spell the membership.
+        let t = texts(&p);
+        assert!(t.iter().any(|s| s.starts_with('[') && s.contains("7.5")), "style {style}: first interval label {t:?}");
+        assert!(t.iter().any(|s| s.starts_with('(') && s.contains("15")), "style {style}: second interval label {t:?}");
+        for want in ["2", "1"] {
+            assert!(t.contains(&want), "style {style}: count {want} missing");
+        }
+        // The separator stays token-sourced: the preset's own card colour at the hairline weight.
+        for b in &bars {
+            assert_eq!(b.4, Some((chart_style(style).slice_seam.0, 0.75)), "style {style}: bin seam");
+        }
+    }
+
+    let (p0, bars0) = scene(0);
+    let (p4, bars4) = scene(4);
+    fn strip_ink(p: &[Prim]) -> Vec<&str> {
+        let mut t = texts(p);
+        t.sort_unstable();
+        t
+    }
+    assert_eq!(bars0.iter().map(|b| (b.0, b.1, b.2, b.3)).collect::<Vec<_>>(), bars4.iter().map(|b| (b.0, b.1, b.2, b.3)).collect::<Vec<_>>(), "the preset must not move a bin");
+    assert_eq!(strip_ink(&p0), strip_ink(&p4), "the preset must not change a label");
+}
+
+/// Phase 4 (04-01): funnel semantics are preset-proof. Stages stay max-normalised, centred and in
+/// category order top to bottom, and a value label that fits a stage keeps the contrast ink on
+/// the fill, on light and dark presets alike.
+#[test]
+fn funnel_stage_widths_and_order_keep_semantics_across_presets() {
+    let d = ChartData {
+        category_levels: vec![],
+        palette: vec![],
+        categories: vec!["a".into(), "b".into(), "c".into()],
+        series: vec![series("S", &[300.0, 200.0, 100.0], [20, 96, 130, 255], ChartKind::Funnel)],
+    };
+    let scene = |style: u32| {
+        let mut c = chart(ChartKind::Funnel);
+        c.style = style;
+        c.legend = LegendPos::None;
+        let p = render(&c, &d, 640.0, 400.0, &ApproxMeasure);
+        let mut stages: Vec<(f32, f32, f32)> = p
+            .iter()
+            .filter_map(|q| match q {
+                Prim::Rect { x, y, w, fill: Some(Fill::Solid(col)), .. } if *col == [20, 96, 130, 255] => Some((*x, *y, *w)),
+                _ => None,
+            })
+            .collect();
+        stages.sort_by(|a, b| a.1.total_cmp(&b.1));
+        (p, stages)
+    };
+
+    for style in [0u32, 4] {
+        let (p, stages) = scene(style);
+        assert_eq!(stages.len(), 3, "style {style}: one rect per stage");
+        let (x0, _, w0) = stages[0];
+        let (_, _, w1) = stages[1];
+        let (_, _, w2) = stages[2];
+        // Widths max-normalised to the values 300/200/100.
+        assert!((w0 / w2 - 3.0).abs() < 0.01, "style {style}: widths {stages:?}");
+        assert!((w1 / w2 - 2.0).abs() < 0.01, "style {style}: widths {stages:?}");
+        // Centred on the funnel axis, in category order top to bottom.
+        let cx = x0 + w0 / 2.0;
+        for (x, _, w) in [stages[1], stages[2]] {
+            assert!((x + w / 2.0 - cx).abs() < 0.01, "style {style}: stages must stay centred");
+        }
+        assert!(stages[0].1 < stages[1].1 && stages[1].1 < stages[2].1, "style {style}: category order top to bottom");
+        // A value label that fits inside the stage keeps the contrast ink on the fill.
+        let inside = p
+            .iter()
+            .find_map(|q| match q {
+                Prim::Text { text, color, .. } if text == "$300" => Some(*color),
+                _ => None,
+            })
+            .expect("style {style}: the widest stage labels its value");
+        let fill: Rgba = [20, 96, 130, 255];
+        let luma = 0.299 * fill[0] as f32 + 0.587 * fill[1] as f32 + 0.114 * fill[2] as f32;
+        let on_fill = if luma < 150.0 { [0xFF, 0xFF, 0xFF, 0xFF] } else { [0x26, 0x26, 0x26, 0xFF] };
+        assert_eq!(inside, on_fill, "style {style}: inside label ink is contrast on the fill");
+    }
+
+    let (_, s0) = scene(0);
+    let (_, s4) = scene(4);
+    assert_eq!(s0, s4, "the preset must not move a stage");
+}
+
 #[test]
 fn pie_points_follow_the_chart_preset() {
     let mut wb = Workbook::new();
