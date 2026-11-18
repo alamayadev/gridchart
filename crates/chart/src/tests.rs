@@ -3141,10 +3141,10 @@ fn area_under_fill_ramps_from_the_series_colour_to_the_card() {
         let fills: Vec<&Prim> = p.iter().filter(|p| matches!(p, Prim::Polygon { fill: Some(Fill::Linear { .. }), .. })).collect();
         assert_eq!(fills.len(), d.series.len(), "{kind:?}: one ramped polygon per series");
         for (i, prim) in fills.iter().enumerate() {
-            let s = &d.series[i];
             let Prim::Polygon { pts, fill: Some(Fill::Linear { from, to, start, end }), .. } = prim else {
                 panic!("{kind:?}: layer {i} is not a ramp");
             };
+            let s = d.series.iter().find(|s| s.color == *from).expect("matching series");
             assert_eq!(*from, s.color, "{kind:?}: layer {i} starts at the series colour");
             assert_eq!(*to, crate::render::mix(s.color, style.card, crate::render::AREA_UNDERFILL_FADE), "{kind:?}: layer {i} fades toward the card");
             assert_eq!(start[0], end[0], "{kind:?}: layer {i} ramp is vertical");
@@ -3302,6 +3302,32 @@ fn the_area_ramp_rasterises_from_the_series_colour_to_the_card() {
     let dist = |a: [u8; 4], b: Rgba| a.iter().zip(b).map(|(x, y)| (*x as i32 - y as i32).abs()).sum::<i32>() as f32;
     assert!(dist(top_px, from) < dist(top_px, to), "near its top edge the layer reads as its series colour: {top_px:?} vs {from:?}/{to:?}");
     assert!(dist(base_px, to) < dist(base_px, from), "near its base the layer reads toward the card mix: {base_px:?} vs {from:?}/{to:?}");
+}
+
+#[test]
+fn unstacked_area_charts_order_polygon_fills_from_largest_to_smallest() {
+    let d = sample(ChartKind::Area);
+    let c = chart(ChartKind::Area);
+    let p = render(&c, &d, 640.0, 400.0, &ApproxMeasure);
+    let fills: Vec<Rgba> = p
+        .iter()
+        .filter_map(|q| match q {
+            Prim::Polygon { fill: Some(Fill::Linear { from, .. }), .. } => Some(*from),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(fills.len(), 3, "three series area fills");
+    // East (~268k total) has largest profile, North (~115k) is middle, South (~81k) is smallest.
+    // Largest must be drawn first (deepest background), smallest last (foreground).
+    assert_eq!(fills[0], d.series[1].color, "largest series (East) fills first in background");
+    assert_eq!(fills[1], d.series[0].color, "middle series (North) fills second");
+    assert_eq!(fills[2], d.series[2].color, "smallest series (South) fills last in foreground");
+
+    // All top-edge strokes (2.25 pt) must be drawn after all polygon fills.
+    let last_fill = p.iter().rposition(|q| matches!(q, Prim::Polygon { fill: Some(Fill::Linear { .. }), .. })).unwrap_or(0);
+    let edges: Vec<usize> = p.iter().enumerate().filter(|(_, q)| matches!(q, Prim::Line { width, dash: false, .. } if *width == 2.25)).map(|(k, _)| k).collect();
+    assert_eq!(edges.len(), 3, "three top edges");
+    assert!(edges.iter().all(|&e| e > last_fill), "all top edges paint after all area fills");
 }
 
 #[test]

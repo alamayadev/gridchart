@@ -359,6 +359,93 @@ fn column_slots(fams: &[Fam], sec: &[bool]) -> (Vec<usize>, f32) {
     (slot_of, slot_keys.len().max(1) as f32)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn render_areas(
+    ctx: &mut Ctx,
+    data: &ChartData,
+    fams: &[Fam],
+    spans: &[Vec<Option<(f64, f64)>>],
+    ncat: usize,
+    cw: f32,
+    plot: Bx,
+    scale_of: &impl Fn(usize) -> Scale,
+    center: &impl Fn(usize) -> f32,
+    vpos: &impl Fn(f64, &Scale) -> f32,
+    labels_on: bool,
+    area_labels: &mut Vec<(f32, f32, String)>,
+) {
+    let mut area_series_indices: Vec<usize> = Vec::new();
+    // Unstacked areas sorted descending by profile area so larger areas sit behind smaller ones
+    let mut unstacked: Vec<(usize, f64)> = data
+        .series
+        .iter()
+        .enumerate()
+        .filter_map(|(i, _)| {
+            let fam = fams.get(i).copied().unwrap_or(Fam::Col);
+            if fam == Fam::Area {
+                let score: f64 = spans.get(i).map(|row| row.iter().filter_map(|sp| *sp).map(|(b, t)| (t - b).abs()).sum()).unwrap_or(0.0);
+                Some((i, score))
+            } else {
+                None
+            }
+        })
+        .collect();
+    unstacked.sort_by(|a, b| b.1.total_cmp(&a.1));
+    area_series_indices.extend(unstacked.into_iter().map(|(i, _)| i));
+
+    // Stacked areas in natural ascending stack order
+    for (i, _) in data.series.iter().enumerate() {
+        let fam = fams.get(i).copied().unwrap_or(Fam::Col);
+        if matches!(fam, Fam::AreaStack | Fam::Area100) {
+            area_series_indices.push(i);
+        }
+    }
+
+    let mut area_edges = Vec::new();
+    for &i in &area_series_indices {
+        let Some(s) = data.series.get(i) else { continue };
+        let sc = scale_of(i);
+        let fmt = Fmt::new(&s.number_format);
+        let Some(row) = spans.get(i) else { continue };
+
+        let mut top = Vec::with_capacity(ncat * 2);
+        let mut base = Vec::with_capacity(ncat);
+        for (j, sp) in row.iter().enumerate() {
+            let (b, t) = sp.unwrap_or((0.0, 0.0));
+            let c = center(j);
+            top.push([c, vpos(t, &sc)]);
+            base.push([c, vpos(b, &sc)]);
+            // Source values (not stack totals), just above the top edge like the line labels.
+            if labels_on
+                && sp.is_some()
+                && let Some(v) = s.values.get(j).copied().flatten()
+            {
+                area_labels.push((c, vpos(t, &sc) - 5.0, fmt.format(v, None)));
+            }
+        }
+        if top.len() == 1 {
+            // A single point: give it some width.
+            if let (Some(t), Some(b)) = (top.first().copied(), base.first().copied()) {
+                top = vec![[t[0] - cw * 0.3, t[1]], [t[0] + cw * 0.3, t[1]]];
+                base = vec![[b[0] - cw * 0.3, b[1]], [b[0] + cw * 0.3, b[1]]];
+            }
+        }
+        let y_top = top.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min);
+        let y_bottom = base.iter().map(|p| p[1]).fold(f32::NEG_INFINITY, f32::max);
+        let poly = decimate_area(top, base, MAX_LINE_PTS * 2);
+        if poly.len() >= 3 {
+            ctx.out.push(Prim::Polygon { pts: poly, fill: Some(ctx.area_fill(s.color, plot.cx(), y_top, y_bottom)), stroke: None });
+        }
+        // The top edge strokes at the line families' pinned weight, over the fill, with
+        // no smoothing: a smoothed edge would lift points off the polygon's own top.
+        let edge: Vec<Option<[f32; 2]>> = row.iter().enumerate().map(|(j, sp)| sp.map(|(_, t)| [center(j), vpos(t, &sc)])).collect();
+        area_edges.push((edge, s.color));
+    }
+    for (edge, color) in area_edges {
+        draw_runs(ctx, &edge, color, 2.25, None);
+    }
+}
+
 pub(super) fn cartesian(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx, horizontal: bool) {
     let ncat = data.categories.len().max(data.series.iter().map(|s| s.values.len()).max().unwrap_or(0)).min(MAX_CATS);
     if ncat == 0 {
@@ -407,12 +494,14 @@ pub(super) fn cartesian(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx
     // Area labels wait until every area is filled, so a later (stacked) area can't paint over them.
     let mut area_labels = Vec::new();
 
-    // Areas first, then columns, then lines on top.
-    for pass in 0..3 {
+    // Areas first (fills sorted descending by profile area, then top-edge strokes),
+    // then columns, then lines on top.
+    render_areas(ctx, data, &fams, &spans, ncat, cw, plot, &scale_of, &center, &vpos, labels_on, &mut area_labels);
+
+    for pass in 1..3 {
         for (i, s) in data.series.iter().enumerate() {
             let fam = fams.get(i).copied().unwrap_or(Fam::Col);
             let want = match pass {
-                0 => matches!(fam, Fam::Area | Fam::AreaStack | Fam::Area100),
                 1 => is_col(fam),
                 _ => is_line(fam),
             };
@@ -426,40 +515,6 @@ pub(super) fn cartesian(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx
                 None => continue,
             };
             match pass {
-                0 => {
-                    let mut top = Vec::with_capacity(ncat * 2);
-                    let mut base = Vec::with_capacity(ncat);
-                    for (j, sp) in row.iter().enumerate() {
-                        let (b, t) = sp.unwrap_or((0.0, 0.0));
-                        let c = center(j);
-                        top.push([c, vpos(t, &sc)]);
-                        base.push([c, vpos(b, &sc)]);
-                        // Source values (not stack totals), just above the top edge like the line labels.
-                        if labels_on
-                            && sp.is_some()
-                            && let Some(v) = s.values.get(j).copied().flatten()
-                        {
-                            area_labels.push((c, vpos(t, &sc) - 5.0, fmt.format(v, None)));
-                        }
-                    }
-                    if top.len() == 1 {
-                        // A single point: give it some width.
-                        if let (Some(t), Some(b)) = (top.first().copied(), base.first().copied()) {
-                            top = vec![[t[0] - cw * 0.3, t[1]], [t[0] + cw * 0.3, t[1]]];
-                            base = vec![[b[0] - cw * 0.3, b[1]], [b[0] + cw * 0.3, b[1]]];
-                        }
-                    }
-                    let y_top = top.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min);
-                    let y_bottom = base.iter().map(|p| p[1]).fold(f32::NEG_INFINITY, f32::max);
-                    let poly = decimate_area(top, base, MAX_LINE_PTS * 2);
-                    if poly.len() >= 3 {
-                        ctx.out.push(Prim::Polygon { pts: poly, fill: Some(ctx.area_fill(s.color, plot.cx(), y_top, y_bottom)), stroke: None });
-                    }
-                    // The top edge strokes at the line families' pinned weight, over the fill, with
-                    // no smoothing: a smoothed edge would lift points off the polygon's own top.
-                    let edge: Vec<Option<[f32; 2]>> = row.iter().enumerate().map(|(j, sp)| sp.map(|(_, t)| [center(j), vpos(t, &sc)])).collect();
-                    draw_runs(ctx, &edge, s.color, 2.25, None);
-                }
                 1 => {
                     let k = slot_of.get(i).copied().unwrap_or(0) as f32;
                     // Hairline bars are merged per pixel column (their envelope is what shows).
