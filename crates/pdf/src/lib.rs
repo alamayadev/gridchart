@@ -742,8 +742,8 @@ impl Page {
         let _ = write!(s, " {} {} {} {} {} {} c", n(x1), n(bottom + se - se * K), n(x1 - se + se * K), n(bottom), n(x1 - se), n(bottom));
         let _ = write!(s, " {} {} l", n(x + sw), n(bottom));
         let _ = write!(s, " {} {} {} {} {} {} c", n(x + sw - sw * K), n(bottom), n(x), n(bottom + sw - sw * K), n(x), n(bottom + sw));
-        let _ = write!(s, " {} {} l", n(x), n(top + nw));
-        let _ = write!(s, " {} {} {} {} {} {} c h", n(x), n(top + nw - nw * K), n(x + nw - nw * K), n(top), n(x + nw), n(top));
+        let _ = write!(s, " {} {} l", n(x), n(top - nw));
+        let _ = write!(s, " {} {} {} {} {} {} c h", n(x), n(top - nw + nw * K), n(x + nw - nw * K), n(top), n(x + nw), n(top));
     }
 
     /// Corner radii clamped to the rectangle, with hostile values treated as square corners.

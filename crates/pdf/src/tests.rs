@@ -783,6 +783,16 @@ fn asymmetric_radii_emit_bezier_arcs() {
 }
 
 #[test]
+fn nw_rounded_corner_stays_within_bounds_and_curves_correctly() {
+    let mut d = PdfDoc::new();
+    let p = d.add_page(100.0, 100.0);
+    p.rounded_rect(10.0, 10.0, 50.0, 50.0, [4.0, 0.0, 0.0, 0.0], Some([1, 2, 3]), None);
+    let c = page_content(&d);
+    assert!(c.contains("10 86 l"), "left edge stops at top - nw: {c}");
+    assert!(c.contains("10 88.209 11.791 90 14 90 c h"), "NW Bézier curves up to top without exceeding it: {c}");
+}
+
+#[test]
 fn a_degenerate_axis_emits_no_shading() {
     let mut d = PdfDoc::new();
     let p = d.add_page(100.0, 100.0);
