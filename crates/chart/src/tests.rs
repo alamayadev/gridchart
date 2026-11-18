@@ -1083,7 +1083,8 @@ fn style_preset_reaches_the_primitives() {
     assert!(card_dark[0] < 0x60 && ink_dark[0] > 0xC0, "dark card needs light ink: {card_dark:?} / {ink_dark:?}");
 
     // Every preset must actually own a different ramp, or the style ID means nothing.
-    let ramps: Vec<Vec<Rgba>> = [0u32, 2, 3, 4, 5, 6].iter().map(|s| fills(*s).2).collect();
+    // (2 is the legacy import default, so Vibrant's first ring slot is 8.)
+    let ramps: Vec<Vec<Rgba>> = [0u32, 8, 3, 4, 5, 6].iter().map(|s| fills(*s).2).collect();
     for (a, ra) in ramps.iter().enumerate() {
         for (b, rb) in ramps.iter().enumerate().skip(a + 1) {
             assert_ne!(ra, rb, "presets {a} and {b} resolve to the same ramp");

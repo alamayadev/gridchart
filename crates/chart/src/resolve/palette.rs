@@ -84,13 +84,15 @@ pub enum Preset {
 
 /// Resolve the preset family for a style ID.
 ///
-/// `0` and `1` both map to the canonical polished default.
-/// `1..=48` map into the preset ring: the six families repeated every six IDs.
+/// `0`, `1` and `2` map to the canonical polished default. Pre-preset GridCraft wrote
+/// `style = 2` into every imported chart (its old import default), so legacy workbooks
+/// must reopen on the default, not silently flip palettes.
+/// `3..=48` map into the preset ring: the six families repeated every six IDs.
 /// `49` and above fall back to the canonical polished default.
 #[inline]
 pub fn chart_style_family(id: u32) -> Preset {
     match id {
-        0 | 1 => Preset::Default,
+        0..=2 => Preset::Default,
         49.. => Preset::Default,
         _ => match (id - 1) % 6 {
             1 => Preset::Vibrant,
@@ -132,9 +134,13 @@ mod tests {
     }
 
     #[test]
-    fn zero_and_one_are_the_canonical_default() {
+    fn zero_one_and_two_are_the_canonical_default() {
         assert!(chart_style_preset(0) == &PALETTE_DEFAULT_TABLE);
         assert!(chart_style_preset(1) == &PALETTE_DEFAULT_TABLE);
+        // Legacy: pre-preset GridCraft persisted style = 2 as its import default.
+        // It must reopen on the default, never silently flip palettes (WR-01).
+        assert!(chart_style_preset(2) == &PALETTE_DEFAULT_TABLE);
+        assert_eq!(chart_style_family(2), Preset::Default);
     }
 
     #[test]
@@ -157,8 +163,8 @@ mod tests {
 
     #[test]
     fn ring_repeats_every_six() {
-        // ID `1..=6` = DEFAULT, VIBRANT, MINIMAL, DARK, PASTEL, TINTED;
-        // `7..=12` repeat the same six.
+        // ID `1`, `2` = DEFAULT (2 is the legacy import default);
+        // `3..=8` = MINIMAL, DARK, PASTEL, TINTED, DEFAULT, VIBRANT; `9..` repeats.
         assert_eq!(chart_style_preset(1), chart_style_preset(7));
         assert_eq!(chart_style_preset(6), chart_style_preset(12));
         assert_eq!(chart_style_preset(48), chart_style_preset(42));

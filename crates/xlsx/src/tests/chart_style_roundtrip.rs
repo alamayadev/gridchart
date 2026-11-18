@@ -65,8 +65,9 @@ fn legacy_17_to_48_preserved_round_trip() {
 }
 
 #[test]
-fn export_writes_zero_for_default() {
-    // Chart.style == 0 must serialize too, so the polished default round-trips losslessly.
+fn export_omits_style_element_for_default() {
+    // ST_Style has no 0, so the default omits <c:style>; a missing element reads
+    // back as STYLE_DEFAULT, keeping the round-trip lossless (WR-02).
     let mut wb = gridcraft_model::Workbook::new();
     let mut c = chart("");
     c.style = gridcraft_model::STYLE_DEFAULT;
@@ -76,7 +77,7 @@ fn export_writes_zero_for_default() {
     let mut z = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
     let mut chart_xml = String::new();
     z.by_name("xl/charts/chart1.xml").unwrap().read_to_string(&mut chart_xml).unwrap();
-    assert!(chart_xml.contains("<c:style val=\"0\"/>"), "style=0 should serialize; chart_xml:\n{chart_xml}");
+    assert!(!chart_xml.contains("<c:style"), "default must omit <c:style> (ST_Style has no 0); chart_xml:\n{chart_xml}");
 }
 
 #[test]

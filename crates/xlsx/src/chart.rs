@@ -758,10 +758,10 @@ pub fn write_chart(wb: &Workbook, si: usize, ch: &Chart, book_name: &str) -> Str
     let mut s = String::from(
         "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<c:chartSpace xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><c:roundedCorners val=\"0\"/>",
     );
+    // ST_Style has no 0 (1..=48 only): a default-styled chart omits <c:style> entirely,
+    // and the reader maps a missing element back to STYLE_DEFAULT (WR-02).
     if (1..=48).contains(&ch.style) {
         let _ = write!(s, "<c:style val=\"{}\"/>", ch.style);
-    } else if ch.style == 0 {
-        let _ = write!(s, "<c:style val=\"0\"/>");
     }
     // A PivotChart names its PivotTable behind the workbook in brackets (`[Book.xlsx]Sheet2!PivotTable1`);
     // without the brackets Excel shows an ordinary chart.

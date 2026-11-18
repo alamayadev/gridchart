@@ -250,10 +250,11 @@ mod tests {
     /// Every preset family resolves to its own authored tokens, and no two are identical.
     #[test]
     fn every_preset_family_resolves_to_its_own_tokens() {
-        let ids = [0u32, 2, 3, 4, 5, 6];
+        let ids = [0u32, 8, 3, 4, 5, 6];
         let styles: Vec<ChartStyle> = ids.iter().map(|&id| chart_style(id)).collect();
         assert_eq!(chart_style(0), DEFAULT);
-        assert_eq!(chart_style(2), VIBRANT);
+        assert_eq!(chart_style(2), DEFAULT, "legacy import default 2 stays on the default (WR-01)");
+        assert_eq!(chart_style(8), VIBRANT);
         assert_eq!(chart_style(3), MINIMAL);
         assert_eq!(chart_style(4), DARK);
         assert_eq!(chart_style(5), PASTEL);
@@ -286,7 +287,7 @@ mod tests {
         assert_eq!(t.title.to_bits(), 12.8f32.to_bits());
         assert_eq!(t.axis_title.to_bits(), 9.2f32.to_bits());
         assert_eq!(t.tick.to_bits(), 8.2f32.to_bits());
-        assert_eq!(chart_style(2).type_scale, t);
+        assert_eq!(chart_style(8).type_scale, t);
         let m = TypeScale::rungs(1080);
         assert_eq!(m.title.to_bits(), 15.1f32.to_bits());
         assert_eq!(m.axis_title.to_bits(), 10.8f32.to_bits());
