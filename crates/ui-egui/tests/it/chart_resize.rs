@@ -215,3 +215,29 @@ fn right_clicking_a_chart_opens_its_menu_not_the_cells() {
     right_click(&mut h, cell, vec2(0.0, 0.0));
     assert!(h.state().grid.context_menu.is_some() && h.state().grid.object_menu.is_none());
 }
+
+#[test]
+fn format_chart_pane_switches_chart_style_and_combo_type() {
+    let (mut h, id) = fixture();
+    h.state_mut().select_object_id(Some(id));
+    h.state_mut().grid.pane = Some("formatChart".into());
+    h.run_steps(2);
+
+    // Expand "Chart Style" section and click "Dark (4)"
+    h.get_by_role_and_label(Role::DisclosureTriangle, "Chart Style").click();
+    h.run_steps(2);
+    h.query_all_by_label("Dark (4)").next().expect("Dark style button").click();
+    h.run_steps(2);
+
+    let style = h.state().session.doc().unwrap().wb.active().unwrap().charts.iter().find(|c| c.id == id).unwrap().style;
+    assert_eq!(style, 4, "chart style switched to Dark preset (4)");
+
+    // Expand "Chart Type" section and click "Combo"
+    h.get_by_role_and_label(Role::DisclosureTriangle, "Chart Type").click();
+    h.run_steps(2);
+    h.query_all_by_label("Combo").next().expect("Combo type button").click();
+    h.run_steps(2);
+
+    let kind = h.state().session.doc().unwrap().wb.active().unwrap().charts.iter().find(|c| c.id == id).unwrap().kind;
+    assert_eq!(kind, gridcraft_chart::ChartKind::Combo, "chart type switched to Combo");
+}

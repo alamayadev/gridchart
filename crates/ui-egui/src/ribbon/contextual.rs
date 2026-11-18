@@ -163,9 +163,28 @@ pub(super) fn chart_design(app: &mut SheetApp, ui: &mut Ui) {
             ("Waterfall", "waterfall", ""),
             ("Funnel", "funnel", ""),
             ("Treemap", "treemap", ""),
+            ("Combo", "combo", ""),
         ] {
             if ui.button(label).clicked() {
                 act(app, "chart.set", json!({"chart": id, "type": k, "subtype": s}));
+            }
+        }
+    });
+    let cs = big_button(ui, Icon::CellStyles, "Chart\nStyles", "Chart Styles", true);
+    for sequence in keytip_table::group_extension(app.keytips.prefix().unwrap_or_default(), &["chart.set"]) {
+        keytip(app, ui, sequence, cs.rect.center_bottom());
+    }
+    egui::Popup::menu(&cs).show(|ui| {
+        for (label, style_id) in [
+            ("Style 1 (Default)", 1),
+            ("Style 2 (Vibrant)", 8),
+            ("Style 3 (Minimal)", 3),
+            ("Style 4 (Dark)", 4),
+            ("Style 5 (Pastel)", 5),
+            ("Style 6 (Tinted)", 6),
+        ] {
+            if ui.button(label).clicked() {
+                act(app, "chart.set", json!({"chart": id, "style": style_id}));
             }
         }
     });

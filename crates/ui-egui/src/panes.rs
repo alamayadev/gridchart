@@ -203,6 +203,7 @@ fn format_chart(app: &mut SheetApp, ui: &mut Ui) {
                 ("Doughnut", "doughnut", ""),
                 ("Scatter", "scatter", ""),
                 ("Radar", "radar", ""),
+                ("Combo", "combo", ""),
             ] {
                 let cur = chart.kind == gridcraft_engine::cmd::insert::chart_kind(k, s);
                 if ui.selectable_label(cur, l).clicked() {
@@ -224,6 +225,23 @@ fn format_chart(app: &mut SheetApp, ui: &mut Ui) {
                 app.run_or_alert("chart.set", json!({"chart": id, "holeSize": hole}));
             }
         }
+    });
+    ui.collapsing("Chart Style", |ui| {
+        ui.horizontal_wrapped(|ui| {
+            for (label, style_id, family) in [
+                ("Default (1)", 1, gridcraft_chart::Preset::Default),
+                ("Vibrant (2)", 8, gridcraft_chart::Preset::Vibrant),
+                ("Minimal (3)", 3, gridcraft_chart::Preset::Minimal),
+                ("Dark (4)", 4, gridcraft_chart::Preset::Dark),
+                ("Pastel (5)", 5, gridcraft_chart::Preset::Pastel),
+                ("Tinted (6)", 6, gridcraft_chart::Preset::Tinted),
+            ] {
+                let cur = gridcraft_chart::chart_style_family(chart.style) == family;
+                if ui.selectable_label(cur, label).clicked() {
+                    app.run_or_alert("chart.set", json!({"chart": id, "style": style_id}));
+                }
+            }
+        });
     });
     ui.collapsing("Legend", |ui| {
         ui.horizontal(|ui| {
