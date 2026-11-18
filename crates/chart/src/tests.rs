@@ -4466,3 +4466,26 @@ fn the_fixture_survives_a_hostile_gradient_and_radii_set() {
     assert_eq!(pixel(&px, w, 161, 89), flat, "hostile radii degrade to square corners, not to a hole");
     assert_eq!(pixel(&px, w, 210, 60), [10, 10, 10, 255], "a zero-length ramp degrades to its near stop");
 }
+
+#[test]
+fn combo_chart_renders_markers_for_line_series() {
+    let mut c = chart(ChartKind::Combo);
+    c.legend = LegendPos::Bottom;
+    let mut d = sample(ChartKind::Combo);
+    if d.series.len() >= 2 {
+        d.series[0].kind = ChartKind::ColumnClustered;
+        d.series[1].kind = ChartKind::Line;
+    }
+    let prims = render(&c, &d, 640.0, 400.0, &ApproxMeasure);
+    let ring = crate::resolve::style::chart_style(c.style).marker_ring;
+    let markers: Vec<&Prim> = prims
+        .iter()
+        .filter(|p| match p {
+            Prim::Circle { stroke: Some(s), .. } => s.0 == ring.0,
+            Prim::Polygon { stroke: Some(s), .. } => s.0 == ring.0,
+            _ => false,
+        })
+        .collect();
+    assert!(!markers.is_empty(), "combo chart line series must render ringed markers");
+}
+

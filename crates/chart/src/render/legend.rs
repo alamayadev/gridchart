@@ -69,7 +69,13 @@ pub fn legend_entries(chart: &Chart, data: &ChartData) -> Vec<(String, Rgba, Swa
                 .enumerate()
                 .map(|(i, s)| {
                     let sw = match plot_kind(chart, s, i) {
-                        ChartKind::Line | ChartKind::LineStacked | ChartKind::Radar | ChartKind::ScatterLines => Swatch::Line,
+                        ChartKind::Line | ChartKind::LineStacked | ChartKind::Radar | ChartKind::ScatterLines => {
+                            if chart.kind == ChartKind::Combo {
+                                Swatch::LineMarker
+                            } else {
+                                Swatch::Line
+                            }
+                        }
                         ChartKind::LineMarkers => Swatch::LineMarker,
                         ChartKind::Scatter | ChartKind::Bubble => Swatch::Marker,
                         _ => Swatch::Box,

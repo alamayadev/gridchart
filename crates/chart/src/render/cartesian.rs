@@ -573,7 +573,8 @@ pub(super) fn cartesian(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx
                     let pts: Vec<Option<[f32; 2]>> = row.iter().enumerate().map(|(j, sp)| sp.map(|(_, t)| [center(j), vpos(t, &sc)])).collect();
                     draw_runs(ctx, &pts, s.color, 2.25, s.smooth.then_some(plot));
                     let k = kinds.get(i).copied().unwrap_or(ChartKind::Line);
-                    if k == ChartKind::LineMarkers && cw >= 3.0 {
+                    let show_markers = k == ChartKind::LineMarkers || (chart.kind == ChartKind::Combo && is_line(fam));
+                    if show_markers && cw >= 3.0 {
                         draw_markers(ctx, pts.iter().flatten().copied(), 3.5, s.color, marker_shape(i));
                     }
                     if labels_on {
