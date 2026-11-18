@@ -3331,6 +3331,57 @@ fn unstacked_area_charts_order_polygon_fills_from_largest_to_smallest() {
 }
 
 #[test]
+fn adjacent_small_pie_slices_have_vertically_separated_outside_labels() {
+    let palette: Vec<Rgba> = (0..5).map(|j| [(30 + j as u8 * 20), 96, 130, 255]).collect();
+    // 2 large slices (48.5% each) and 3 adjacent 1% hairline slices
+    let d = ChartData {
+        category_levels: vec![],
+        palette: palette.clone(),
+        categories: (0..5).map(|j| format!("Cat{j}")).collect(),
+        series: vec![series("Pie", &[485.0, 485.0, 10.0, 10.0, 10.0], palette[0], ChartKind::Pie)],
+    };
+    let mut c = chart(ChartKind::Pie);
+    c.title = None;
+    c.legend = LegendPos::None;
+    c.data_labels = true;
+    let prims = render(&c, &d, 640.0, 400.0, &ApproxMeasure);
+
+    // Find all 3-point leader lines
+    let leaders: Vec<&Prim> = prims
+        .iter()
+        .filter(|p| matches!(p, Prim::Line { pts, width, dash: false, .. } if pts.len() == 3 && (*width - 1.0).abs() < 1e-6))
+        .collect();
+    assert_eq!(leaders.len(), 3, "three adjacent hairline slices get three leaders");
+
+    // Extract the label y coordinates for the three hairline slices
+    let mut leader_ends: Vec<[f32; 2]> = leaders
+        .iter()
+        .filter_map(|p| match p {
+            Prim::Line { pts, .. } => pts.get(2).copied(),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(leader_ends.len(), 3, "three leader anchor endpoints");
+    leader_ends.sort_by(|a, b| a[1].total_cmp(&b[1]));
+
+    // Verify each adjacent pair has vertical separation >= LABEL_SIZE (9.0 pt)
+    let min_sep = 9.0;
+    for i in 0..(leader_ends.len() - 1) {
+        let diff = leader_ends[i + 1][1] - leader_ends[i][1];
+        assert!(
+            diff >= min_sep - 1e-3,
+            "adjacent outside labels must not overlap vertically: diff was {diff} pt (expected >= {min_sep} pt)"
+        );
+    }
+
+    // Verify all 3 labels sit exactly on their leader line's end
+    for end in &leader_ends {
+        let found = prims.iter().any(|p| matches!(p, Prim::Text { x, y, .. } if (*x - end[0]).abs() < 1e-2 && (*y - end[1]).abs() < 1e-2));
+        assert!(found, "each outside label sits on its corresponding leader line end point");
+    }
+}
+
+#[test]
 fn two_level_categories_resolve_and_draw() {
     let years = ["2023", "", "", "2024", "", ""];
     let months = ["Oct", "Nov", "Dec", "Jan", "Feb", "Mar"];

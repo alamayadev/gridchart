@@ -291,6 +291,138 @@ fn slice_label(ctx: &Ctx, area: Bx, s: Slice, allow_outside: bool) -> Option<Sli
     })
 }
 
+fn relax_outside_labels(area: Bx, outer: f32, labels: &mut [SliceLabel]) {
+    let (cx, cy) = (area.cx(), area.cy());
+    let y_min = area.y + 4.0;
+    let y_max = area.bottom() - 4.0;
+    let available_h = y_max - y_min;
+    if available_h <= 0.0 {
+        return;
+    }
+
+    for right_side in [true, false] {
+        let mut indices: Vec<usize> = labels
+            .iter()
+            .enumerate()
+            .filter_map(|(i, l)| {
+                if l.leader.is_some() && (l.align == HAlign::Left) == right_side {
+                    Some(i)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if indices.len() <= 1 {
+            continue;
+        }
+
+        // Sort outside labels in this hemisphere vertically by initial target y
+        indices.sort_by(|&a, &b| {
+            let ya = labels.get(a).map(|l| l.y).unwrap_or(0.0);
+            let yb = labels.get(b).map(|l| l.y).unwrap_or(0.0);
+            ya.total_cmp(&yb)
+        });
+
+        let target_gap = LABEL_SIZE + 2.0; // 11.0 pt minimum vertical separation
+        let count = indices.len() as f32;
+        let d = target_gap.min(available_h / count.max(1.0));
+
+        let mut ys: Vec<f32> = indices.iter().filter_map(|&idx| labels.get(idx).map(|l| l.y)).collect();
+        if ys.len() != indices.len() {
+            continue;
+        }
+
+        // Iterative push-apart around cluster centroid
+        for _ in 0..12 {
+            for i in 0..(ys.len() - 1) {
+                let Some(&y_cur) = ys.get(i) else { break };
+                let Some(&y_next) = ys.get(i + 1) else { break };
+                let diff = y_next - y_cur;
+                if diff < d {
+                    let overlap = d - diff;
+                    if let Some(y) = ys.get_mut(i) {
+                        *y -= overlap * 0.5;
+                    }
+                    if let Some(y) = ys.get_mut(i + 1) {
+                        *y += overlap * 0.5;
+                    }
+                }
+            }
+            for y in &mut ys {
+                *y = (*y).clamp(y_min, y_max);
+            }
+        }
+
+        // Enforce strict minimum vertical separation
+        for i in 0..(ys.len() - 1) {
+            let Some(&y_cur) = ys.get(i) else { break };
+            if let Some(y_next) = ys.get_mut(i + 1)
+                && *y_next < y_cur + d
+            {
+                *y_next = y_cur + d;
+            }
+        }
+        if let Some(&last) = ys.last() && last > y_max {
+            let overflow = last - y_max;
+            for y in &mut ys {
+                *y -= overflow;
+            }
+        }
+        for i in (0..(ys.len().saturating_sub(1))).rev() {
+            let Some(&y_next) = ys.get(i + 1) else { continue };
+            if let Some(y_cur) = ys.get_mut(i)
+                && *y_cur > y_next - d
+            {
+                *y_cur = y_next - d;
+            }
+        }
+        if let Some(&first) = ys.first() && first < y_min {
+            let underflow = y_min - first;
+            for y in &mut ys {
+                *y += underflow;
+            }
+        }
+
+        // Apply updated coordinates to labels and adjust 3-point leader lines
+        for (k, &idx) in indices.iter().enumerate() {
+            let Some(&y_adj) = ys.get(k) else { continue };
+            let Some(l) = labels.get_mut(idx) else { continue };
+            l.y = y_adj;
+
+            let Some(pts) = &mut l.leader else { continue };
+            if pts.len() >= 3 {
+                let Some(&[ax, ay]) = pts.first() else { continue };
+                let Some(&[lx_orig, _]) = pts.get(1) else { continue };
+
+                let dy = (y_adj - cy).abs();
+                let chord = if dy < outer + 8.0 {
+                    ((outer + 8.0).powi(2) - dy.powi(2)).max(0.0).sqrt()
+                } else {
+                    0.0
+                };
+
+                let (lx, ex) = if right_side {
+                    let min_lx = cx + chord;
+                    let lx = lx_orig.max(min_lx).clamp(area.x + 2.0, (area.right() - 10.0).max(area.x + 2.0));
+                    let ex = (lx + 8.0).clamp(area.x + 2.0, area.right() - 2.0);
+                    (lx, ex)
+                } else {
+                    let max_lx = cx - chord;
+                    let lx = lx_orig.min(max_lx).clamp((area.x + 10.0).min(area.right() - 2.0), area.right() - 2.0);
+                    let ex = (lx - 8.0).clamp(area.x + 2.0, area.right() - 2.0);
+                    (lx, ex)
+                };
+
+                pts[0] = [ax, ay];
+                pts[1] = [lx, y_adj];
+                pts[2] = [ex, y_adj];
+                l.x = ex;
+            }
+        }
+    }
+}
+
 pub(super) fn pie(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx, inner: f32, names: bool) {
     let Some(s) = data.series.first() else { return };
     let vals: Vec<f64> = s.values.iter().take(MAX_CATS).map(|v| v.map(f64::abs).unwrap_or(0.0)).collect();
@@ -325,6 +457,7 @@ pub(super) fn pie(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx, inne
         }
         a += sweep;
     }
+    relax_outside_labels(area, r, &mut labels);
     for l in &labels {
         if let Some(pts) = &l.leader {
             ctx.line(pts.clone(), ctx.style.text, 1.0);
@@ -412,6 +545,7 @@ pub(super) fn doughnut(ctx: &mut Ctx, chart: &Chart, data: &ChartData, area: Bx)
             a += sweep;
         }
     }
+    relax_outside_labels(area, r, &mut labels);
     for l in &labels {
         if let Some(pts) = &l.leader {
             ctx.line(pts.clone(), ctx.style.text, 1.0);
