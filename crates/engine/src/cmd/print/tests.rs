@@ -1269,7 +1269,7 @@ fn a_gradient_polygon_reaches_the_pdf_shading_behind_a_clip() {
     let mut d = PdfDoc::new();
     let p = d.add_page(200.0, 200.0);
     draw::draw_prims(p, &prims, draw::Xf { ox: 0.0, oy: 0.0, k: 1.0 });
-    let pdf = d.finish();
+    let pdf = d.finish().unwrap();
     assert!(contains(&pdf, "/ShadingType 2"));
     assert!(contains(&pdf, "/Sh0 sh"));
     assert!(contains(&pdf, " W n"), "gradient polygon is clipped");
@@ -1404,7 +1404,7 @@ fn style_tokens_reach_the_raster_svg_and_pdf_backends() {
         let pg = doc.add_page(64.0, 64.0);
         super::draw::draw_prims(pg, &hostile, super::draw::Xf { ox: 0.0, oy: 0.0, k: 1.0 });
     }
-    let bytes = doc.finish();
+    let bytes = doc.finish().unwrap();
     assert!(contains(&bytes, &fill_op([200, 10, 10, 255])), "the PDF still writes the from stop as a fill");
     assert!(contains(&bytes, "re f"), "and the shape is still painted, not dropped");
     let (chart_pdf, _) = pdf_of(&mut s, json!({}));
@@ -1492,7 +1492,7 @@ fn translucent_ink_composites_against_the_preset_card_not_white() {
             let pg = doc.add_page(W as f32, H as f32);
             super::draw::draw_prims(pg, &prims, super::draw::Xf { ox: 0.0, oy: 0.0, k: 1.0 });
         }
-        let pdf = doc.finish();
+        let pdf = doc.finish().unwrap();
         let card = [style.card[0], style.card[1], style.card[2]];
         let want = over(ink, card);
         assert!(
@@ -1538,7 +1538,7 @@ fn the_fixture_reaches_the_svg_and_the_pdf_rings() {
         let pg = doc.add_page(w, h);
         super::draw::draw_prims(pg, &prims, super::draw::Xf { ox: 0.0, oy: 0.0, k: 1.0 });
     }
-    let pdf = doc.finish();
+    let pdf = doc.finish().unwrap();
     let bg = [fixture::CARD[0], fixture::CARD[1], fixture::CARD[2]];
     assert!(contains(&pdf, "/ShadingType 2"), "the ramp is vector axial shading, not a bitmap");
     assert!(contains(&pdf, &format!("/C0 [{} ", rgb_op(over(fixture::FROM, bg)))), "the near stop is exact, composited against the card");
@@ -1557,13 +1557,13 @@ fn the_svg_and_pdf_dashes_use_the_one_dash_pattern() {
         let pg = doc.add_page(100.0, 10.0);
         super::draw::draw_prims(pg, &prims, super::draw::Xf { ox: 0.0, oy: 0.0, k: 1.0 });
     }
-    let pdf = doc.finish();
+    let pdf = doc.finish().unwrap();
     assert!(contains(&pdf, "[3 2] 0 d"), "PDF uses the shared dash at k=1");
     let mut doc2 = gridcraft_pdf::PdfDoc::new();
     {
         let pg = doc2.add_page(100.0, 10.0);
         super::draw::draw_prims(pg, &prims, super::draw::Xf { ox: 0.0, oy: 0.0, k: 2.0 });
     }
-    let pdf2 = doc2.finish();
+    let pdf2 = doc2.finish().unwrap();
     assert!(contains(&pdf2, "[6 4] 0 d"), "PDF scales the shared dash by k");
 }

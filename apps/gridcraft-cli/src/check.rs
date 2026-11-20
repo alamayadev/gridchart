@@ -283,8 +283,8 @@ fn collect_inputs(inputs: &[String]) -> Discovery {
 /// Returns false only when the global file budget stops traversal. `seen` holds the shallowest
 /// depth each directory was scanned from; `rescan` is set below a directory reached again from a
 /// shallower path (its depth-limited subtree may now fit), where already collected files are skipped.
-#[allow(clippy::only_used_in_recursion)]
-fn walk(dir: &Path, depth: usize, rescan: bool, out: &mut Discovery, seen: &mut std::collections::HashMap<(u64, u64), usize>) -> bool {
+#[cfg_attr(not(unix), allow(unused_mut))]
+fn walk(dir: &Path, depth: usize, mut rescan: bool, out: &mut Discovery, seen: &mut std::collections::HashMap<(u64, u64), usize>) -> bool {
     // A directory is visited once by identity (dev+inode on unix) unless reached from a shallower
     // path: several links to the same directory are aliases, not exponential branches of the scan
     // (each directory is scanned at most MAX_DEPTH + 1 times). Other platforms keep the depth cap only.
@@ -297,7 +297,7 @@ fn walk(dir: &Path, depth: usize, rescan: bool, out: &mut Discovery, seen: &mut 
             // by name later, it is walked from depth 0.
             match seen.get(&identity) {
                 Some(&shallowest) if shallowest <= depth => return true,
-                Some(_) => { /* TODO: rescan */ }
+                Some(_) => rescan = true,
                 None => {}
             }
             if depth <= MAX_DEPTH {

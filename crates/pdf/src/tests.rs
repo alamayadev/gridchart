@@ -783,7 +783,7 @@ fn the_shading_dictionary_is_routed_to_the_page_resources() -> Result<(), Box<dy
     let clip = c.find("W n").ok_or_else(|| io::Error::other("no clipping path"))?;
     let sh = c.find("/Sh0 sh").ok_or_else(|| io::Error::other("no shading operator"))?;
     assert!(clip < sh, "the clip comes first: {c}");
-    let pdf = d.finish();
+    let pdf = d.finish()?;
     for key in ["/ShadingType 2", "/ColorSpace /DeviceRGB", "/Coords [", "/FunctionType 2", "/Domain [0 1]", "/C0 [", "/C1 [", "/Shading << /Sh0"] {
         assert!(find(&pdf, key.as_bytes()).is_some(), "missing {key}");
     }
@@ -1022,7 +1022,7 @@ fn a_polygon_clip_writes_a_closed_path_or_nothing() -> Result<(), Box<dyn Error>
     p.save();
     assert!(!p.clip_polygon(&[[10.0, 10.0], [90.0, 10.0]]));
     p.restore();
-    let pdf = d.finish();
+    let pdf = d.finish()?;
     check_xref(&pdf)?;
     let (_, pages) = parse_pages(&pdf);
     let content = &pages[0].content;

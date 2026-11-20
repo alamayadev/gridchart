@@ -829,7 +829,6 @@ fn default_chart_style() -> u32 {
 }
 
 /// What a button runs when it is pressed.
-/// What a button runs when it is pressed.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum ControlAction {

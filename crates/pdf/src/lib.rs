@@ -1148,7 +1148,7 @@ fn shadings_of(out: &mut craft_pdf::classic::Writer, next: &mut u32, page: &Page
         let _ = write!(refs, "/Sh{k} {id} 0 R ");
         shading_obj(out, id, page, sh)?;
     }
-    if refs.is_empty() { String::new() } else { format!(" /Shading << {refs}>>") }
+    if refs.is_empty() { Ok(String::new()) } else { Ok(format!(" /Shading << {refs}>>")) }
 }
 
 /// One axial shading object: `/ShadingType 2` with a two-stop exponential function.
